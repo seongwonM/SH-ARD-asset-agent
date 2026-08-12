@@ -47,7 +47,7 @@ exp-new:
 	@test -n "$(NAME)" || (echo "사용법: make exp-new NAME=001-short-name" && exit 2)
 	@case "$(NAME)" in *[!a-z0-9-]*|-*|*-) echo "NAME은 소문자/숫자/하이픈만 쓰고 하이픈으로 시작·종료하지 마세요"; exit 2;; esac
 	git fetch origin --prune
-	git worktree add -b "codex/exp/$(NAME)" ".worktrees/$(NAME)" origin/main
+	git worktree add -b "exp/$(NAME)" ".worktrees/$(NAME)" origin/main
 	git -C ".worktrees/$(NAME)" branch --unset-upstream
 	@echo "생성 완료: cd .worktrees/$(NAME)"
 
@@ -57,7 +57,7 @@ exp-list:
 exp-remove:
 	@test -n "$(NAME)" || (echo "사용법: make exp-remove NAME=001-short-name" && exit 2)
 	@case "$(NAME)" in *[!a-z0-9-]*|-*|*-) echo "NAME은 소문자/숫자/하이픈만 쓰고 하이픈으로 시작·종료하지 마세요"; exit 2;; esac
-	@test "$$(git -C ".worktrees/$(NAME)" rev-parse --abbrev-ref HEAD)" = "codex/exp/$(NAME)" || (echo "worktree와 브랜치 이름이 일치하지 않습니다" && exit 2)
+	@test "$$(git -C ".worktrees/$(NAME)" rev-parse --abbrev-ref HEAD)" = "exp/$(NAME)" || (echo "worktree와 브랜치 이름이 일치하지 않습니다" && exit 2)
 	@test -z "$$(git -C ".worktrees/$(NAME)" status --porcelain)" || (echo "커밋되지 않은 변경이 있어 정리하지 않습니다" && exit 2)
 	@if git worktree 2>&1 | grep -q "worktree remove"; then git worktree remove ".worktrees/$(NAME)"; else rm -rf -- ".worktrees/$(NAME)" && git worktree prune; fi
-	git branch -d "codex/exp/$(NAME)"
+	git branch -d "exp/$(NAME)"

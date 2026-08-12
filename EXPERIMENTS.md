@@ -14,11 +14,11 @@
 
 ## 이름 규칙
 
-- 브랜치: `codex/exp/<번호>-<짧은-가설>`
+- 브랜치: `exp/<번호>-<짧은-가설>`
 - worktree: `.worktrees/<번호>-<짧은-가설>`
 - 실험 기록: `experiments/<번호>-<짧은-가설>.md`
 
-예: `codex/exp/001-profile-kind-threshold`
+예: `exp/001-profile-kind-threshold`
 
 번호는 `001`부터 순서대로 증가시킨다. 이름에는 구현 내용보다 검증할 가설을 담는다.
 
@@ -41,7 +41,7 @@ cp experiments/_template.md experiments/001-profile-kind-threshold.md
 make test
 git add <수정한 파일> experiments/001-profile-kind-threshold.md
 git commit -m "exp(001): profile kind 임계값 가설"
-git push -u origin codex/exp/001-profile-kind-threshold
+git push -u origin exp/001-profile-kind-threshold
 git rev-parse HEAD
 make bench
 ```
@@ -95,7 +95,12 @@ make exp-remove NAME=001-profile-kind-threshold
 `exp-remove`는 수정 파일이 남아 있으면 worktree를 지우지 않는다. 브랜치가 병합되지
 않았다면 worktree만 정리되고 마지막 `git branch -d`가 안전하게 실패한다. 기각 실험
 브랜치를 로컬에서도 지우려면 결과 push를 확인한 뒤 별도로
-`git branch -D codex/exp/<이름>`을 실행한다.
+`git branch -D exp/<이름>`을 실행한다.
+
+실험 브랜치를 push하면 GitHub Actions가 같은 코드를 GHCR에도 발행한다. 예를 들어
+`exp/001-profile-kind-threshold`의 최신 이미지는
+`ghcr.io/seongwonm/sh-ard-asset-agent:exp-001-profile-kind-threshold`로 찾을 수 있다.
+정확한 재현에는 움직이는 브랜치 태그 대신 커밋 SHA 태그를 사용한다.
 
 ## 도구를 더 붙이는 시점
 
