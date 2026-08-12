@@ -1,0 +1,58 @@
+# 수동 디버그/실행용 Pod — sleep infinity로 띄운 뒤 exec로 들어가 사용한다.
+#
+#   kubectl apply -f k8s/data-pvc.yaml && kubectl apply -f k8s/pod.yaml
+#   kubectl exec -it sh-ard-asset-agent -- /bin/bash
+#     $ python examples/run_from_csv.py <csv_path> <asset_name>
+#     $ make test            # vLLM 없이 mock으로 전 구간 검증
+#
+# 이미지 태그는 .github/workflows/build-push.yml이 커밋 SHA로 자동 갱신한다.
+# 수동으로 건드리지 말 것.
+#
+# 새 구조에서 달라진 점
+#   - LLM_STRUCTURED_MODE: guided_json(구형) / json_schema(신형) 전환 스위치.
+#     서빙 중인 vLLM 버전에 맞춰야 한다. 틀리면 옵션이 조용히 무시되어
+#     스키마 강제가 걸리지 않은 채로 돌아간다 - 실패하지 않아서 더 위험하다.
+#   - AGENT_MAX_BATCH: 한 파도에 동시 실행할 skill 수. Gateway RPM과 함께 봐야 한다.
+#     RPM=360이면 초당 6건이고, 응답 지연 2초 가정 시 동시 12건까지 채울 수 있다.
+#     배치는 그 안에서 움직여야 하므로 기본 8로 둔다.
+#   - 메모리 상한 상향: probe가 DataFrame을 반복 조회한다(uniqueness는 전수 검사).
+#     넓은 테이블에서 1Gi로는 부족했다.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sh-ard-asset-agent
+  labels:
+    app: sh-ard-asset-agent
+spec:
+  restartPolicy: Never
+  containers:
+    - name: sh-ard-asset-agent
+      image: ghcr.io/seongwonm/sh-ard-asset-agent:latest
+      imagePullPolicy: Always
+      command: ["sleep", "infinity"]
+      envFrom:
+        - secretRef:
+            name: sh-ard-asset-agent-secret
+      env:
+        - name: LLM_STRUCTURED_MODE
+          value: "guided_json"
+        - name: AGENT_MAX_BATCH
+          value: "8"
+        - name: AGENT_MAX_LLM_CALLS
+          value: "300"
+        - name: PYTHONPATH
+          value: "/app:/app/src"
+      volumeMounts:
+        - name: data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "3Gi"
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: sh-ard-asset-agent-data

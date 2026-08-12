@@ -85,6 +85,14 @@ def compute_gaps(
         if missing:
             gaps.append(Gap(slot=Slot.COLUMN_SEMANTICS, targets=missing))
 
+    # 프로파일만 있으면 바로 채울 수 있는 슬롯 (컬럼 의미를 기다리지 않는다).
+    # 정합성/PII/표준용어는 컬럼 해석과 독립이라 앞에서 확보해두면
+    # 이후 해석·합성 단계가 이 사실을 근거로 쓸 수 있다.
+    if board.has(Slot.TABLE_PROFILE):
+        for slot in (Slot.CONSTRAINTS, Slot.COMPLIANCE, Slot.GLOSSARY):
+            if not board.has(slot):
+                gaps.append(Gap(slot=slot))
+
     semantic_ready = bool(facts) and len(board.keys_of(Slot.COLUMN_SEMANTICS)) >= max(1, len(facts) // 2)
     for slot in (Slot.GRAIN, Slot.LINKAGE, Slot.TOPIC, Slot.SUMMARY, Slot.SEARCH_TERMS, Slot.VERIFICATION):
         if board.has(slot):
@@ -252,25 +260,60 @@ def unreachable_slots(
 # ---------------------------------------------------------------------------
 
 
-def build_batch(candidates: List[Candidate], limit: int = MAX_BATCH) -> List[Candidate]:
-    """서로 독립인 작업만 묶는다. 단일 값 슬롯 작업은 단독 실행."""
+def _writes(c: Candidate) -> set:
+    """
+    이 작업이 board에 쓰는 좌표 집합.
+
+    keyed 슬롯은 (슬롯, 대상)까지 내려가야 한다. 컬럼이 다르면 같은 슬롯에 써도
+    충돌하지 않기 때문이다. 단일 값 슬롯은 (슬롯, "")이라 같은 슬롯을 쓰는 두
+    작업이 자동으로 배타가 된다.
+    """
+    return {(s, c.target if s in KEYED_SLOTS else "") for s in c.provides}
+
+
+def build_batch(
+    candidates: List[Candidate], registry: SkillRegistry, limit: int = MAX_BATCH
+) -> List[Candidate]:
+    """
+    쓰기 좌표가 겹치지 않고 서로의 산출물을 필요로 하지 않는 작업을 묶는다.
+
+    초기 버전은 per_column 작업만 묶었는데, 그러면 dependency-check /
+    pii-detection / glossary-align처럼 서로 완전히 독립인 테이블 수준 skill이
+    한 번에 하나씩만 돌아 파도가 불필요하게 늘어난다. 충돌 여부로 판정하면
+    같은 규칙이 두 경우를 모두 덮는다.
+    """
     if not candidates:
         return []
 
-    head = candidates[0]
-    if not head.keyed_only:
-        return [head]
-
     batch: List[Candidate] = []
-    seen_targets: set = set()
+    taken: set = set()
+    provided_slots: set = set()
+
     for c in candidates:
-        if not c.keyed_only or c.target in seen_targets:
+        w = _writes(c)
+        if w & taken:
             continue
+        # 배치 안에서 A의 산출물을 B가 선행 조건으로 요구하면 순서가 필요하다.
+        requires = set(registry.get(c.skill).manifest.requires)
+        if requires & provided_slots:
+            continue
+        if any(s in {x for x, _ in w} for s in _required_by_batch(batch, registry)):
+            continue
+
         batch.append(c)
-        seen_targets.add(c.target)
+        taken |= w
+        provided_slots |= set(c.provides)
         if len(batch) >= limit:
             break
-    return batch or [head]
+
+    return batch or [candidates[0]]
+
+
+def _required_by_batch(batch: List[Candidate], registry: SkillRegistry) -> set:
+    out: set = set()
+    for c in batch:
+        out |= set(registry.get(c.skill).manifest.requires)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +378,7 @@ def decide(state: AgentState, registry: SkillRegistry, batch_limit: int = MAX_BA
             note=f"남은 gap={open_gaps}, 선행 미충족={blocked_gaps}. 적용 가능한 skill이 없음",
         )
 
-    batch = build_batch(candidates, batch_limit)
+    batch = build_batch(candidates, registry, batch_limit)
     suffix = " [부분 충족 상태로 진행]" if relaxed else ""
     if unreachable:
         suffix += f" [도달 불가 슬롯 면제: {sorted(s.value for s in unreachable)}]"

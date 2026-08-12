@@ -110,6 +110,19 @@ skills/<snake_name>/
 - 가드에서 모든 문자열 무차별 검사
 - probe 실행 실패를 `passed=False`로 처리 — 실행 실패는 반증이 아니다
 
+## 기존 레포 연동
+
+`MIGRATION.md` 참조. 핵심 제약 하나만 여기 옮긴다.
+
+**`src/agent/compat.py`의 출력 키를 바꾸지 말 것.**
+기존 `run_robustness_test.py`(최대 1440회 배치)와 `analyze_robustness_test.py`가
+이 모양에 결합돼 있고, 결과는 PVC에 누적된다. 키를 바꾸면 옛 결과와
+새 결과를 비교할 수 없어 엔진 교체 효과를 측정할 수 없다.
+신규 정보는 **추가만** 한다(`asset_context.verification`, `trace`).
+
+`tests/test_legacy_contract.py`가 이 계약을 지킨다. 실패하면 compat을 고치고,
+배치 스크립트는 건드리지 않는다.
+
 ## 남은 작업
 
 `HANDOFF.md`에 우선순위와 함께 정리되어 있다. 가장 급한 것:

@@ -76,11 +76,43 @@ def repair_json(text: str) -> str:
 
 
 class RuntimeDeps(SkillDeps):
-    """운영용 deps. 테스트는 이 클래스를 상속해 structured()만 갈아끼운다."""
+    """
+    운영용 deps. 테스트는 이 클래스를 상속해 structured()만 갈아끼운다.
 
-    def __init__(self, frames: Dict[str, Any] | None = None):
+    raw_client를 받는 이유: 기존 레포의 run_robustness_test.py는
+    `OpenAI(...)` 인스턴스 하나를 만들어 모든 조합이 공유하게 한다.
+    조합마다 새 클라이언트를 만들면 Gateway RPM 스로틀 상태(마지막 호출 시각)가
+    매번 리셋되어 한도를 넘긴다. 그 공유 구조를 그대로 유지한다.
+    """
+
+    def __init__(
+        self,
+        frames: Dict[str, Any] | None = None,
+        raw_client: Any = None,
+        config: Any = None,
+    ):
         self._frames = frames or {}
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
+        self._client = raw_client
+        self._config = config
+        self._stats = {
+            "llm_call_count": 0,
+            "llm_total_latency": 0.0,
+            "llm_prompt_tokens": 0,
+            "llm_completion_tokens": 0,
+            "llm_total_tokens": 0,
+        }
+
+    def get_stats(self) -> Dict[str, Any]:
+        """옛 LLMClient.get_stats()와 같은 키를 낸다(compat 어댑터가 그대로 쓴다)."""
+        n = self._stats["llm_call_count"]
+        return {
+            "llm_call_count": n,
+            "llm_avg_latency_seconds": round(self._stats["llm_total_latency"] / n, 3) if n else 0.0,
+            "llm_prompt_tokens": self._stats["llm_prompt_tokens"],
+            "llm_completion_tokens": self._stats["llm_completion_tokens"],
+            "llm_total_tokens": self._stats["llm_total_tokens"],
+        }
 
     # -- DataFrame -------------------------------------------------------
     def register_frame(self, ref: str, frame) -> str:
@@ -96,8 +128,9 @@ class RuntimeDeps(SkillDeps):
     # -- LLM -------------------------------------------------------------
     def _payload(self, messages: List[Dict[str, str]], schema: Dict[str, Any], stage: str):
         flat = inline_refs(schema)
+        model = getattr(self._config, "semantic_model", None) or MODEL
         payload: Dict[str, Any] = {
-            "model": MODEL,
+            "model": model,
             "messages": messages,
             "temperature": 0.0 if stage != "expand" else 0.2,
             "max_tokens": 1024,
@@ -113,14 +146,48 @@ class RuntimeDeps(SkillDeps):
 
     async def _post(self, payload: Dict[str, Any]) -> str:
         """
-        TODO: 실제 구현
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
-            extra = payload.pop("extra_body", None)
-            r = await client.chat.completions.create(**payload, extra_body=extra)
-            return r.choices[0].message.content
+        OpenAI 호환 엔드포인트 호출.
+
+        raw_client가 동기 SDK(openai.OpenAI)여도 동작하도록 스레드로 넘긴다.
+        기존 레포가 동기 OpenAI 인스턴스를 공유하는 구조를 유지하기 위함이다.
         """
-        raise NotImplementedError("vLLM 엔드포인트 연결부를 구현하세요")
+        import time as _t
+
+        if self._client is None:
+            raise LLMError(
+                "LLM 클라이언트가 없습니다. RuntimeDeps(raw_client=OpenAI(...))로 주입하세요."
+            )
+
+        extra = payload.pop("extra_body", None)
+        started = _t.time()
+
+        def _call():
+            kwargs = dict(payload)
+            if extra is not None:
+                kwargs["extra_body"] = extra
+            return self._client.chat.completions.create(**kwargs)
+
+        create = getattr(self._client.chat.completions, "create", None)
+        if create is None:
+            raise LLMError("chat.completions.create 인터페이스가 없는 클라이언트입니다.")
+
+        if asyncio.iscoroutinefunction(create):
+            kwargs = dict(payload)
+            if extra is not None:
+                kwargs["extra_body"] = extra
+            resp = await create(**kwargs)
+        else:
+            resp = await asyncio.to_thread(_call)
+
+        self._stats["llm_call_count"] += 1
+        self._stats["llm_total_latency"] += _t.time() - started
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            self._stats["llm_prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+            self._stats["llm_completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+            self._stats["llm_total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+
+        return resp.choices[0].message.content
 
     async def structured(self, messages: List[Dict[str, str]], model_cls: Type[BaseModel], stage: str):
         payload = self._payload(messages, model_cls.model_json_schema(), stage)

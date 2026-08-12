@@ -44,6 +44,9 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
     semantics = keyed.get(Slot.COLUMN_SEMANTICS.value, {})
     grain = values.get(Slot.GRAIN.value, {})
     verification = values.get(Slot.VERIFICATION.value, {})
+    constraints = values.get(Slot.CONSTRAINTS.value, {})
+    compliance = values.get(Slot.COMPLIANCE.value, {})
+    glossary = values.get(Slot.GLOSSARY.value, {})
 
     refuted_cols = _refuted_columns(verification)
     usable = {n: v for n, v in semantics.items() if n not in refuted_cols}
@@ -85,6 +88,11 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
         "columns": [{"name": n, **v} for n, v in usable.items()],
         "linkage": list(keyed.get(Slot.LINKAGE.value, {}).values()),
         "coverage": coverage,
+        # 신규 슬롯은 요약 생성에 쓰지 않고 그대로 실어 나른다.
+        # LLM이 PII 판정이나 종속성을 문장으로 바꾸면 근거가 희석된다.
+        "constraints": constraints,
+        "compliance": compliance,
+        "glossary": glossary,
         "verification": {
             "status": verification.get("status", "unknown"),
             "verified": len(verification.get("verified", [])),

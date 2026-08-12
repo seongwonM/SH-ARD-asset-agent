@@ -1,7 +1,7 @@
 ---
 name: synthesize-context
 description: 채워진 컬럼 의미·입도·연결 정보를 종합해 자산 전체의 주제, 요약, 검색어를 생성하고 최종 asset_context를 조립한다. 새로운 사실을 만들지 않고 이미 검증된 슬롯만 합성한다. 파이프라인의 마지막 skill이다.
-requires: [table_profile, column_semantics, grain, verification]
+requires: [table_profile, column_semantics, grain, verification, constraints, compliance, glossary]
 provides: [topic, summary, search_terms, asset_context]
 applies_when:
   always: true

@@ -35,7 +35,7 @@ def all_facts(ctx: SkillContext) -> List[Dict]:
 def column_block(ctx: SkillContext) -> str:
     f = column_fact(ctx, ctx.target)
     rng = f"{f.get('min_value','')} ~ {f.get('max_value','')}".strip(" ~") or "없음"
-    return f"""[테이블]
+    block = f"""[테이블]
 - 이름: {ctx.asset_name}
 - 설명: {ctx.source_description or '제공되지 않음'}
 
@@ -46,6 +46,11 @@ def column_block(ctx: SkillContext) -> str:
 - 고유값: {f.get('distinct_count',0)}개 (비율 {f.get('distinct_ratio',0)})
 - 값 범위: {rng}
 - 표본값: {f.get('samples',[])}"""
+    # 스키마·데이터 사전의 기존 설명은 가장 강한 근거다.
+    # 여기 실린 단위·용어는 가드의 허용 집합에도 함께 들어간다(executor 참고).
+    if ctx.column_description:
+        block += f"\n- 기존 설명: {ctx.column_description}"
+    return block
 
 
 def messages(ctx: SkillContext, task: str, extra: str = "") -> List[Dict[str, str]]:

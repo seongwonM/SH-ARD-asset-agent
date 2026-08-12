@@ -112,6 +112,9 @@ class AgentState(TypedDict, total=False):
     asset_id: str
     asset_name: str
     source_description: str
+    # 스키마/데이터 사전에서 온 컬럼별 기존 설명. 있으면 근거 집합에 포함되어
+    # 가드가 이 텍스트에 등장한 단위·수치를 허용한다.
+    column_descriptions: Dict[str, str]
     data_ref: str
     language: str
     goal_slots: List[str]  # 이 슬롯들이 채워지면 종료
@@ -141,6 +144,7 @@ def new_state(
     asset_name: str,
     data_ref: str,
     source_description: str = "",
+    column_descriptions: Dict[str, str] | None = None,
     language: str = "ko",
     max_iterations: int = 24,
     max_llm_calls: int = 200,
@@ -150,6 +154,7 @@ def new_state(
         asset_id=asset_id,
         asset_name=asset_name,
         source_description=source_description,
+        column_descriptions=column_descriptions or {},
         data_ref=data_ref,
         language=language,
         goal_slots=goal_slots or list(DEFAULT_GOAL_SLOTS),

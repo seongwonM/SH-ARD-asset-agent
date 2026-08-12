@@ -38,6 +38,9 @@ class Slot(str, Enum):
     COLUMN_SEMANTICS = "column_semantics"  # 컬럼별 의미 (부분 충족 가능)
     GRAIN = "grain"  # 한 행이 무엇을 의미하는가
     LINKAGE = "linkage"  # 다른 자산과 이어질 수 있는 키
+    CONSTRAINTS = "constraints"  # 컬럼 간 함수 종속 등 데이터 정합성 사실
+    COMPLIANCE = "compliance"  # PII 등 규제 대상 컬럼 태깅
+    GLOSSARY = "glossary"  # 표준용어(business glossary) 정렬
     TOPIC = "topic"
     SUMMARY = "summary"
     SEARCH_TERMS = "search_terms"
@@ -121,6 +124,10 @@ class SkillContext(BaseModel):
 
     instructions: str = ""  # SKILL.md 본문 (progressive disclosure로 여기서 처음 로드됨)
     target: str = ""  # per_column skill이면 컬럼명
+    # 스키마/데이터 사전의 기존 컬럼 설명.
+    # column_description은 대상 컬럼 것, column_descriptions는 전체(테이블 수준 skill용).
+    column_description: str = ""
+    column_descriptions: Dict[str, str] = Field(default_factory=dict)
     board: Dict[str, Any] = Field(default_factory=dict)  # 지금까지 채워진 슬롯
     repair_hints: List[str] = Field(default_factory=list)
 

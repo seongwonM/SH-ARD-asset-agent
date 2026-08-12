@@ -52,6 +52,7 @@ async def execute_batch(
         allowed_numbers=_allowed_numbers(facts, state),
         grounding_text=" ".join(
             [state.get("asset_name", ""), state.get("source_description", "")]
+            + list((state.get("column_descriptions") or {}).values())
             + [s for f in facts for s in f.samples]
         ),
     )
@@ -120,6 +121,8 @@ async def _run_one(
         data_ref=state.get("data_ref", ""),
         instructions=skill.instructions,  # 여기서 처음 본문을 로드한다
         target=target,
+        column_description=(state.get("column_descriptions") or {}).get(target, ""),
+        column_descriptions=state.get("column_descriptions") or {},
         board=board.model_dump(),
         repair_hints=[],
     )
@@ -245,4 +248,6 @@ def _allowed_numbers(facts, state) -> List[str]:
         for s in f.samples:
             nums.extend(pat.findall(str(s)))
     nums.extend(pat.findall(state.get("source_description", "") or ""))
+    for desc in (state.get("column_descriptions") or {}).values():
+        nums.extend(pat.findall(str(desc)))
     return sorted({n.replace(",", "") for n in nums})

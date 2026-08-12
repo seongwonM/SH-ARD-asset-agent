@@ -89,6 +89,29 @@ class MockDeps(SkillDeps):
             )
         if name == "GenericOut":
             return model_cls(meaning="분류가 명확하지 않은 컬럼이다.", usage="", confidence=0.6)
+        if name == "PiiOut":
+            cols = [l.split(" ")[1] for l in user.splitlines() if l.startswith("- ") and "(" in l]
+            entries = []
+            for c in cols:
+                if "email" in c or "phone" in c:
+                    entries.append({"column": c, "level": "direct",
+                                    "kind": "email" if "email" in c else "phone_kr",
+                                    "note": "형식이 연락처에 해당"})
+                elif "equipment" in c:
+                    entries.append({"column": c, "level": "none", "kind": "", "note": "설비 식별자"})
+            return model_cls(columns=[model_cls.model_fields["columns"].annotation.__args__[0](**e)
+                                      for e in entries])
+        if name == "GlossaryOut":
+            item_cls = model_cls.model_fields["mappings"].annotation.__args__[0]
+            mappings = []
+            for line in user.splitlines():
+                if not line.startswith("- ") or ":" not in line:
+                    continue
+                col, desc = line[2:].split(":", 1)
+                # 원문에 있는 토큰만 고른다 (창작 차단 로직을 통과하려면 필수)
+                token = next((t for t in desc.split() if len(t) >= 2), "")
+                mappings.append(item_cls(column=col.strip(), term=token))
+            return model_cls(mappings=mappings)
         if name == "GrainOut":
             # 프롬프트에 실린 실제 컬럼 목록에서 고른다.
             # 하드코딩하면 다른 픽스처에서 항상 실패해 테스트가 vacuous해진다.
