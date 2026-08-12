@@ -141,6 +141,7 @@ def score_candidates(
     blocked: List[str],
     rows: int = 0,
     strict: bool = True,
+    unreachable: set | None = None,
 ) -> List[Candidate]:
     open_gaps = [g for g in gaps if g.is_open]
     gap_slots = {g.slot for g in open_gaps}
@@ -162,11 +163,13 @@ def score_candidates(
         # 컬럼 1개만 해석돼도 has()가 True가 되어, 5개 중 2개만 끝난 상태에서
         # 최종 합성 skill이 실행되고 목표 달성으로 종료되는 문제가 실제로 발생했다.
         # strict 모드에서는 "그 슬롯에 남은 gap이 없을 것"을 요구한다.
-        unmet = (
-            [r for r in m.requires if r in incomplete]
-            if strict
-            else [r for r in m.requires if not board.has(r)]
-        )
+        if strict:
+            unmet = [r for r in m.requires if r in incomplete]
+        else:
+            # 채울 방법이 아예 없는 슬롯은 requires에서 면제한다.
+            # 그렇지 않으면 선행 skill이 blocked된 순간 후속 skill 전체가 영구 정지한다.
+            skip = unreachable or set()
+            unmet = [r for r in m.requires if not board.has(r) and r not in skip]
         if unmet:
             continue
 
@@ -211,6 +214,36 @@ def score_candidates(
             )
 
     out.sort(key=lambda c: (-c.score, c.skill, c.target))
+    return out
+
+
+def unreachable_slots(
+    registry: SkillRegistry, board: Board, gaps: List[Gap], blocked: List[str]
+) -> set:
+    """
+    어떤 skill로도 더 이상 채울 수 없는 슬롯.
+
+    그 슬롯을 제공하는 skill이 전부 blocked면 영원히 비어 있게 된다.
+    이걸 감지하지 못하면 후속 skill이 requires를 영원히 만족하지 못해
+    산출물 없이 no_applicable_skill로 끝난다 (넓은 테이블에서 실제로 발생했다).
+    """
+    blocked_set = set(blocked)
+    out = set()
+    for g in gaps:
+        if board.has(g.slot):
+            continue
+        alive = False
+        for skill in registry.all():
+            if g.slot not in skill.manifest.provides:
+                continue
+            for t in (g.targets or [""]):
+                if f"{skill.manifest.name}::{t}" not in blocked_set:
+                    alive = True
+                    break
+            if alive:
+                break
+        if not alive:
+            out.add(g.slot)
     return out
 
 
@@ -283,6 +316,16 @@ def decide(state: AgentState, registry: SkillRegistry, batch_limit: int = MAX_BA
         candidates = score_candidates(registry, board, facts, gaps, blocked, rows, strict=False)
         relaxed = bool(candidates)
 
+    # 3차: 도달 불가능한 선행 슬롯은 면제한다.
+    unreachable: set = set()
+    if not candidates:
+        unreachable = unreachable_slots(registry, board, gaps, blocked)
+        if unreachable:
+            candidates = score_candidates(
+                registry, board, facts, gaps, blocked, rows, strict=False, unreachable=unreachable
+            )
+            relaxed = bool(candidates)
+
     if not candidates:
         open_gaps = [g.slot.value for g in gaps if g.is_open]
         blocked_gaps = [g.slot.value for g in gaps if not g.is_open]
@@ -294,6 +337,8 @@ def decide(state: AgentState, registry: SkillRegistry, batch_limit: int = MAX_BA
 
     batch = build_batch(candidates, batch_limit)
     suffix = " [부분 충족 상태로 진행]" if relaxed else ""
+    if unreachable:
+        suffix += f" [도달 불가 슬롯 면제: {sorted(s.value for s in unreachable)}]"
     if len(batch) > 1:
         names = ", ".join(f"{c.skill}::{c.target}" for c in batch)
         note = f"gap {len(gaps)}개 → 독립 작업 {len(batch)}건 병렬 실행: {names}{suffix}"

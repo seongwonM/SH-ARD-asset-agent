@@ -90,19 +90,33 @@ class MockDeps(SkillDeps):
         if name == "GenericOut":
             return model_cls(meaning="분류가 명확하지 않은 컬럼이다.", usage="", confidence=0.6)
         if name == "GrainOut":
+            # 프롬프트에 실린 실제 컬럼 목록에서 고른다.
+            # 하드코딩하면 다른 픽스처에서 항상 실패해 테스트가 vacuous해진다.
+            cols = [l.split(":")[0].lstrip("- ").strip() for l in user.splitlines() if l.startswith("- ")]
+            cols = [c for c in cols if c and " " not in c]
+            unique_like = next((c for c in cols if c in ("run_id",)), cols[0] if cols else "")
+            repeated = next((c for c in cols if c == "equipment_id"), unique_like)
             return model_cls(
-                grain="한 행은 한 장비에서 수행된 공정 실행 1건이다.",
-                key_columns=["run_id"] if retry else ["equipment_id"],  # 1차: 유일하지 않은 키
+                grain="한 행은 개별 실행 건이다.",
+                key_columns=[unique_like] if retry else [repeated],
                 confidence=0.94,
             )
         if name == "ContextOut":
+            # 검색어에 실제 컬럼명만 넣는다. 하드코딩하면 다른 픽스처에서
+            # 가드에 막혀 테스트가 vacuous하게 실패한다.
+            cols = [
+                l.split(":")[0].lstrip("- ").strip()
+                for l in user.splitlines()
+                if l.startswith("- ") and ":" in l
+            ]
+            cols = [c for c in cols if c and " " not in c][:3]
             return model_cls(
                 topic="장비 공정 출력",
                 summary="이 데이터셋은 제조 장비에서 수행된 공정 실행 건별로 실행 시점과 측정된 출력값, "
                         "결과 판정을 기록한다. 공정 실행 단위로 장비 출력의 변동을 확인할 수 있다.",
                 key_points=["공정 실행 이력", "장비 출력 측정"],
                 use_cases=["공정별 출력 변동 분석", "이상 판정 건 확인"],
-                search_terms=["공정 로그", "장비 출력", "설비 출력", "power_value", "run_id"],
+                search_terms=["공정 로그", "장비 출력", "설비 출력"] + cols,
                 confidence=0.92,
             )
         raise AssertionError(f"예상치 못한 모델: {name}")

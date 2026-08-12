@@ -60,7 +60,11 @@ def test_batching_scales_with_column_count():
 
     import fixtures
 
-    wide = pd.DataFrame({f"code_{i}": ["A", "B", "A", "B"] for i in range(20)})
+    # mock이 반환하는 카테고리 값과 실제 값을 일치시킨다.
+    # 불일치하면 probe가 전부 반증해 컬럼이 0개 처리되고,
+    # waves=0이 임계값을 통과해 테스트가 vacuous하게 성공한다 (실제로 겪음).
+    n_cols = 20
+    wide = pd.DataFrame({f"code_{i}": ["정상", "이상", "이상", "정상"] for i in range(n_cols)})
     original = fixtures.DF
     fixtures.DF = wide
     try:
@@ -68,8 +72,13 @@ def test_batching_scales_with_column_count():
     finally:
         fixtures.DF = original
 
+    done = {c["name"] for c in r["board"]["values"]["asset_context"]["columns"]}
+    assert len(done) == n_cols, f"{n_cols}개 중 {len(done)}개만 처리됨 — 파도 측정이 무의미하다"
+
     waves = _column_waves(r)
-    assert waves <= 4, f"20컬럼이 {waves}파도로 처리됨 (batch_limit=8 기준 3파도 예상)"
+    expected = -(-n_cols // 8)  # ceil
+    assert waves <= expected + 1, f"{n_cols}컬럼이 {waves}파도 (batch_limit=8 기준 {expected}파도 예상)"
+    assert waves < n_cols, "배치가 동작하지 않아 컬럼당 1파도가 됨"
 
 
 def test_probe_refutes_false_primary_key():
