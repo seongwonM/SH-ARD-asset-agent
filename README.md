@@ -109,6 +109,18 @@ keyed 슬롯에 서로 다른 key로 쓰는 작업은 충돌하지 않으므로 
 | 20 | 3 | 7 | 20파도 |
 | 60 | 8 | 12 | 60파도 |
 
+## Evidence-first 전환
+
+2026-08-12 기준 현재 구조는 `hypothesis-first`에서 `evidence-first`로 옮겨가는 중이다.
+
+- observer skill이 rule-based evidence를 먼저 만든다
+- evidence artifact를 board에 누적한다
+- `analysis-planning` skill이 evidence를 읽고 다음 분석 우선순위를 정한다
+- interpreter skill은 raw data보다 evidence와 profile을 근거로 해석한다
+- verifier와 synthesizer는 기존처럼 뒤를 받친다
+
+자세한 설계와 유지보수 원칙은 `ARCHITECTURE.md` 참고.
+
 ## skill 선택 로직
 
 ```

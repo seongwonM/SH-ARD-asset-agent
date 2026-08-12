@@ -5,6 +5,8 @@ requires: [table_profile]
 provides: [column_semantics]
 applies_when:
   column_kinds: [unknown, free_text, spatial]
+role: interpreter
+capabilities: [generic_semantics]
 cost: low
 per_column: true
 max_attempts: 2

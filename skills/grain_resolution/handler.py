@@ -1,7 +1,7 @@
 """
 grain-resolution handler.
 
-입도 주장은 복합 컬럼 유일성으로 반증한다.
+행 단위 주장은 복합 컬럼 유일성으로 반증한다.
 "한 행은 run_id 단위다"라는 주장은 run_id가 실제로 유일해야 성립한다.
 LLM이 그럴듯한 키 조합을 말해도 데이터가 아니라면 통과하지 못한다.
 """
@@ -45,7 +45,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
             "content": f"[테이블]\n{ctx.asset_name}\n{ctx.source_description or '설명 없음'}\n\n"
             f"[컬럼 의미]\n" + "\n".join(lines) + "\n\n"
             f"[식별자 유일성 실측]\n" + ("\n".join(uniq_lines) or "없음") + "\n\n"
-            "이 테이블의 한 행이 무엇을 의미하는지 판정하라."
+            "이 테이블의 한 행이 무엇을 의미하는지, 즉 기록 단위를 판정하라."
             + ("\n\n[직전 문제]\n" + "\n".join(ctx.repair_hints) if ctx.repair_hints else ""),
         },
     ]

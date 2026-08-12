@@ -36,11 +36,16 @@ class Slot(str, Enum):
 
     TABLE_PROFILE = "table_profile"  # 컬럼 구조/통계 사실
     COLUMN_SEMANTICS = "column_semantics"  # 컬럼별 의미 (부분 충족 가능)
-    GRAIN = "grain"  # 한 행이 무엇을 의미하는가
+    DISTRIBUTION_PROFILE = "distribution_profile"  # 컬럼별 분포 요약
+    VALUE_PATTERNS = "value_patterns"  # 컬럼별 값 패턴 요약
+    JOIN_CANDIDATES = "join_candidates"  # 컬럼별 조인 후보 평가
+    GRAIN = "grain"  # 한 행이 무엇을 의미하는가 (사용자-facing: row unit)
     LINKAGE = "linkage"  # 다른 자산과 이어질 수 있는 키
     CONSTRAINTS = "constraints"  # 컬럼 간 함수 종속 등 데이터 정합성 사실
+    QUALITY_RISKS = "quality_risks"  # 결측/중복/드리프트 등 품질 리스크
     COMPLIANCE = "compliance"  # PII 등 규제 대상 컬럼 태깅
     GLOSSARY = "glossary"  # 표준용어(business glossary) 정렬
+    ANALYSIS_PLAN = "analysis_plan"  # 증거를 보고 다음 작업을 고르는 계획
     TOPIC = "topic"
     SUMMARY = "summary"
     SEARCH_TERMS = "search_terms"
@@ -68,6 +73,14 @@ class Cost(str, Enum):
 
 
 COST_WEIGHT = {Cost.FREE: 0.0, Cost.LOW: 0.1, Cost.MEDIUM: 0.25, Cost.HIGH: 0.5}
+
+
+class SkillRole(str, Enum):
+    OBSERVER = "observer"
+    INTERPRETER = "interpreter"
+    VERIFIER = "verifier"
+    SYNTHESIZER = "synthesizer"
+    DELIBERATOR = "deliberator"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +113,8 @@ class SkillManifest(BaseModel):
     requires: List[Slot] = Field(default_factory=list)
     provides: List[Slot] = Field(default_factory=list)
     applies_when: AppliesWhen = Field(default_factory=AppliesWhen)
+    role: SkillRole = SkillRole.INTERPRETER
+    capabilities: List[str] = Field(default_factory=list)
     cost: Cost = Cost.MEDIUM
     per_column: bool = False  # True면 컬럼 단위로 반복 실행되는 skill
     max_attempts: int = 3
@@ -144,6 +159,32 @@ class Contribution(BaseModel):
     confidence: float = 0.0
 
 
+class Artifact(BaseModel):
+    """관측/해석/검증 산출물의 공통 표현."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_type: str
+    producer: str
+    role: SkillRole
+    slot: Slot
+    key: str = ""
+    scope: Dict[str, Any] = Field(default_factory=dict)
+    payload: Any = None
+    evidence: List[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class AnalysisNeed(BaseModel):
+    """다음에 더 살펴볼 분석 과제."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: Slot
+    reason: str
+    priority: int = Field(default=1, ge=1, le=5)
+
+
 class VerifiableClaim(BaseModel):
     """
     검사 가능한 주장 + 그것을 반증할 probe.
@@ -168,11 +209,13 @@ class SkillResult(BaseModel):
     skill: str
     ok: bool = True
     contributions: List[Contribution] = Field(default_factory=list)
+    artifacts: List[Artifact] = Field(default_factory=list)
     claims: List[VerifiableClaim] = Field(default_factory=list)
     notes: str = ""
     # skill이 스스로 "이건 내가 못 하겠고 저 슬롯이 먼저 필요하다"고 신호할 수 있다.
     # 플래너가 놓친 의존성을 실행 중에 발견하는 경로.
     requests: List[Slot] = Field(default_factory=list)
+    analysis_needs: List[AnalysisNeed] = Field(default_factory=list)
 
 
 class SkillHandler(Protocol):

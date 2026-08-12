@@ -1,10 +1,12 @@
 ---
 name: synthesize-context
-description: 채워진 컬럼 의미·입도·연결 정보를 종합해 자산 전체의 주제, 요약, 검색어를 생성하고 최종 asset_context를 조립한다. 새로운 사실을 만들지 않고 이미 검증된 슬롯만 합성한다. 파이프라인의 마지막 skill이다.
-requires: [table_profile, column_semantics, grain, verification, constraints, compliance, glossary]
+description: 채워진 컬럼 의미·행 단위·연결 정보를 종합해 자산 전체의 주제, 요약, 검색어를 생성하고 최종 asset_context를 조립한다. 새로운 사실을 만들지 않고 이미 검증된 슬롯만 합성한다. 파이프라인의 마지막 skill이다.
+requires: [table_profile, column_semantics, grain, verification, constraints, quality_risks, compliance, glossary]
 provides: [topic, summary, search_terms, asset_context]
 applies_when:
   always: true
+role: synthesizer
+capabilities: [asset_context_synthesis]
 cost: medium
 per_column: false
 max_attempts: 3
@@ -27,5 +29,5 @@ max_attempts: 3
 `search_terms`만 확장이 허용된다. 검색 재현율이 목적이므로 일반 명사 확장까지 막으면
 목적을 해친다. 단 수치·기준값·타 자산 관계는 여기서도 만들지 않는다.
 
-## 입도 미확정 시
+## 행 단위 미확정 시
 `grain` 슬롯이 비어 있으면 요약에서 행 단위를 단정하지 않고 컬럼 구성 중심으로 기술한다.

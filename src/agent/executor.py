@@ -27,7 +27,7 @@ import asyncio
 import time
 from typing import Any, Dict, List, Tuple
 
-from .contract import SkillContext, SkillDeps, SkillResult
+from .contract import Artifact, SkillContext, SkillDeps, SkillResult
 from .guards import GuardContext, run_guards
 from .probes import run_probes
 from .registry import SkillRegistry
@@ -68,6 +68,7 @@ async def execute_batch(
     # 병합만은 단일 스레드로 두어야 순서 의존 버그가 생기지 않는다.
     blocked = list(state.get("blocked") or [])
     requested = list(state.get("requested_slots") or [])
+    analysis_queue = list(state.get("analysis_queue") or [])
     history: List[Dict[str, Any]] = []
     llm_calls = 0
     probe_runs = 0
@@ -79,9 +80,15 @@ async def execute_batch(
         if r["result"] is not None:
             for c in r["result"].contributions:
                 board.put(c)
+            for artifact in r["result"].artifacts:
+                board.add_artifact(artifact)
             for slot in r["result"].requests:
                 if slot.value not in requested:
                     requested.append(slot.value)
+            for need in r["result"].analysis_needs:
+                entry = need.model_dump(mode="json")
+                if entry not in analysis_queue:
+                    analysis_queue.append(entry)
         elif r["key"] not in blocked:
             blocked.append(r["key"])
 
@@ -90,6 +97,7 @@ async def execute_batch(
         "iteration": iteration,
         "blocked": blocked,
         "requested_slots": requested,
+        "analysis_queue": analysis_queue,
         "budget": {"llm_calls": (state.get("budget") or {}).get("llm_calls", 0) + llm_calls,
                    "probe_runs": (state.get("budget") or {}).get("probe_runs", 0) + probe_runs},
         "history": history,
@@ -149,6 +157,22 @@ async def _run_one(
             ctx.repair_hints = [result.notes]
             continue
 
+        if not result.artifacts:
+            result.artifacts = [
+                Artifact(
+                    artifact_type=f"{manifest.role.value}:{c.slot.value}",
+                    producer=skill_name,
+                    role=manifest.role,
+                    slot=c.slot,
+                    key=c.key,
+                    scope={"target": target} if target else {},
+                    payload=c.value,
+                    evidence=c.evidence,
+                    confidence=c.confidence,
+                )
+                for c in result.contributions
+            ]
+
         # 2단: probe 검증 — 데이터로 주장을 반증한다
         probe_fail = _verify_claims(result, deps, ctx.data_ref)
         probe_runs += len(result.claims)
@@ -176,6 +200,8 @@ async def _run_one(
                 "ok": True,
                 "attempts": attempt,
                 "slots": [c.slot.value for c in result.contributions],
+                "artifacts": [a.artifact_type for a in result.artifacts],
+                "analysis_needs": [n.slot.value for n in result.analysis_needs],
                 "claims_verified": len(result.claims),
                 "note": result.notes,
                 "trail": trail,

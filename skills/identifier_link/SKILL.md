@@ -5,6 +5,8 @@ requires: [table_profile]
 provides: [column_semantics, linkage]
 applies_when:
   column_kinds: [identifier]
+role: interpreter
+capabilities: [identifier_role, linkage_hypothesis]
 cost: low
 per_column: true
 max_attempts: 3

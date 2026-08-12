@@ -5,6 +5,8 @@ requires: [table_profile]
 provides: [compliance]
 applies_when:
   always: true
+role: interpreter
+capabilities: [pii_tagging]
 cost: low
 per_column: false
 max_attempts: 3

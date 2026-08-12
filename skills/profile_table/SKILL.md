@@ -5,6 +5,8 @@ requires: []
 provides: [table_profile]
 applies_when:
   always: true
+role: observer
+capabilities: [column_profile, kind_classification]
 cost: free
 per_column: false
 max_attempts: 1

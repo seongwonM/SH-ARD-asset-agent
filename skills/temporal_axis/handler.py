@@ -1,7 +1,7 @@
 """
 temporal-axis handler.
 
-해상도 주장을 handler의 if문이 아니라 TIME_COMPONENT probe로 검증한다.
+시간 단위 주장을 handler의 if문이 아니라 TIME_COMPONENT probe로 검증한다.
 probe는 실제 시:분:초 성분을 조사하므로, 표본에 ':'가 있는지만 보는
 문자열 검사보다 정확하다. (표본 5개엔 없지만 전체엔 있는 경우를 놓치지 않는다)
 """
@@ -37,7 +37,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
     out: TemporalOut = await deps.structured(
         messages(
             ctx,
-            "이 컬럼이 기록하는 시점의 의미와 시간 해상도를 판단하라.",
+            "이 컬럼이 기록하는 시점의 의미와 시간 단위를 판단하라.",
             extra=f"[데이터 실측]\n- 실제로 구분 가능한 최소 단위: {finest.observed}",
         ),
         TemporalOut,
@@ -52,7 +52,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
     )
     result.claims.append(
         VerifiableClaim(
-            statement=f"{ctx.target}는 {out.resolution} 해상도를 가진다",
+            statement=f"{ctx.target}는 {out.resolution} 시간 단위를 가진다",
             probe=ProbeRequest(
                 kind=ProbeKind.TIME_COMPONENT,
                 columns=[ctx.target],

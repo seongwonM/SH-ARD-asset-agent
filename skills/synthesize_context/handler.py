@@ -45,6 +45,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
     grain = values.get(Slot.GRAIN.value, {})
     verification = values.get(Slot.VERIFICATION.value, {})
     constraints = values.get(Slot.CONSTRAINTS.value, {})
+    quality_risks = values.get(Slot.QUALITY_RISKS.value, {})
     compliance = values.get(Slot.COMPLIANCE.value, {})
     glossary = values.get(Slot.GLOSSARY.value, {})
 
@@ -87,6 +88,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
         "use_cases": out.use_cases,
         "grain": grain.get("grain", ""),
         "grain_keys": grain.get("key_columns", []),
+        "record_unit": grain.get("grain", ""),
         "columns": [
             {"name": n, "profiled_kind": profiled_kinds.get(n, ""), **v} for n, v in usable.items()
         ],
@@ -95,6 +97,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
         # 신규 슬롯은 요약 생성에 쓰지 않고 그대로 실어 나른다.
         # LLM이 PII 판정이나 종속성을 문장으로 바꾸면 근거가 희석된다.
         "constraints": constraints,
+        "quality_risks": quality_risks,
         "compliance": compliance,
         "glossary": glossary,
         "verification": {
