@@ -10,11 +10,21 @@ from agent.state import new_state
 from fixtures import DF, SKILLS, SOURCE_DESC, MockDeps, make_state, print_trace
 
 
+def _run_sync(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def run(deps, **kw):
     agent = build_agent(SKILLS, deps, **kw)
-    return asyncio.get_event_loop().run_until_complete(
-        agent.ainvoke(make_state(), {"recursion_limit": 200})
-    )
+    return _run_sync(agent.ainvoke(make_state(), {"recursion_limit": 200}))
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +171,7 @@ def test_llm_budget_stops_run():
         asset_id="t", asset_name="process_log", data_ref="runtime://table-001",
         source_description=SOURCE_DESC, max_llm_calls=3,
     )
-    r = asyncio.get_event_loop().run_until_complete(agent.ainvoke(state, {"recursion_limit": 200}))
+    r = _run_sync(agent.ainvoke(state, {"recursion_limit": 200}))
     assert r["stop_reason"] == "llm_budget_exhausted"
 
 

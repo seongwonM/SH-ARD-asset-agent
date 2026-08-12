@@ -32,8 +32,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT))  # bench 패키지 접근용
 
-from agent.compat import TableAssetContextBuilder  # noqa: E402
 from agent.llm import RuntimeDeps  # noqa: E402
+from agent.runner import TableAssetContextRunner  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ def main() -> None:
     column_descriptions = None if args.no_column_descriptions else build_column_descriptions(metadata)
 
     deps = build_deps(offline=args.offline, model=args.model)
-    builder = TableAssetContextBuilder(deps=deps)
+    builder = TableAssetContextRunner(deps=deps)
     result = builder.build(
         tabular_data=df,
         asset_name=asset_name,
@@ -165,6 +165,8 @@ def main() -> None:
 def _print_report(r: dict) -> None:
     ac = r.get("asset_context") or {}
     details = ac.get("asset_context_details", {})
+    col_block = r.get("column_analysis") or {}
+    data_interp = r.get("data_interpretation") or {}
     perf = r.get("performance", {})
     ver = ac.get("verification", {})
 
@@ -175,6 +177,8 @@ def _print_report(r: dict) -> None:
     print(f"\n[입도] {ac.get('grain', '(미확정)')}")
     if details.get("keywords"):
         print(f"[키워드] {', '.join(details['keywords'][:12])}")
+    if col_block.get("summary"):
+        print(f"\n[컬럼]\n{col_block['summary']}")
 
     if ac.get("compliance", {}).get("pii_columns"):
         print("\n[개인정보]")
@@ -191,6 +195,10 @@ def _print_report(r: dict) -> None:
         print(f"\n[함수 종속] {len(deps_found)}건")
         for d in deps_found[:5]:
             print(f"  {d['determinant']} → {d['dependent']}")
+    if data_interp.get("time_axes"):
+        print("\n[시간축]")
+        for axis in data_interp["time_axes"][:5]:
+            print(f"  {axis['name']} ({axis.get('resolution') or 'unknown'})")
 
     print("\n[검증]")
     print(
