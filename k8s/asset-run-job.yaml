@@ -1,0 +1,79 @@
+# 내부 CSV 1건을 같은 파이프라인으로 실행하는 Job.
+#
+# 사용 순서
+#   1) PVC에 입력 CSV와 optional metadata JSON 업로드
+#      예: /data/internal/my_asset.csv
+#          /data/internal/my_asset_metadata.json
+#   2) 아래 env의 ASSET_CSV_PATH / ASSET_NAME / OUTPUT_PATH 조정
+#   3) kubectl apply -f k8s/asset-run-job.yaml
+#   4) kubectl logs -f job/sh-ard-asset-run
+#   5) 결과 확인: /data/results/<asset>.json
+#
+# 이 Job은 examples/run_local.py를 그대로 사용한다.
+# 즉, 로컬 online smoke test와 같은 경로를 k8s에서도 밟는다.
+#
+# 주의
+# - LLM_API_ENDPOINT / LLM_API_KEY / LLM_MODEL은 secret에서 주입돼야 한다.
+# - metadata 파일은 <csv_stem>_metadata.json 이름 규칙을 따른다.
+# - 현재 기본 structured mode는 json_schema 기준이다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sh-ard-asset-run
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: sh-ard-asset-agent
+        role: asset-run
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: asset-run
+          image: ghcr.io/seongwonm/sh-ard-asset-agent:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              python examples/run_local.py \
+                "${ASSET_CSV_PATH}" \
+                "${ASSET_NAME}" \
+                --output "${OUTPUT_PATH}" \
+                ${EXTRA_ARGS}
+          envFrom:
+            - secretRef:
+                name: sh-ard-asset-agent-secret
+          env:
+            - name: ASSET_CSV_PATH
+              value: /data/internal/process_log.csv
+            - name: ASSET_NAME
+              value: process_log
+            - name: OUTPUT_PATH
+              value: /data/results/process_log.json
+            - name: EXTRA_ARGS
+              value: --quiet
+            - name: LLM_STRUCTURED_MODE
+              value: json_schema
+            - name: AGENT_MAX_BATCH
+              value: "8"
+            - name: AGENT_MAX_LLM_CALLS
+              value: "300"
+            - name: PYTHONPATH
+              value: /app:/app/src
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sh-ard-asset-agent-data
