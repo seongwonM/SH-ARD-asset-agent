@@ -41,9 +41,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from agent.compat import TableAssetContextBuilder  # noqa: E402
 from bench.scoring import consistency, score_against_truth, score_process  # noqa: E402
 from examples.run_local import build_column_descriptions, load_dotenv  # noqa: E402
+from agent.runner import TableAssetContextRunner  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def main() -> None:
     for model in models:
         # 모델 하나당 deps 하나. RPM 스로틀 상태를 전체가 공유해야 한도가 지켜진다.
         deps = build_deps(args.offline, model)
-        builder = TableAssetContextBuilder(deps=deps)
+        builder = TableAssetContextRunner(deps=deps)
 
         for ds in datasets:
             df = pd.read_csv(ds["csv"])

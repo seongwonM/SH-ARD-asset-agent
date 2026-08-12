@@ -43,17 +43,35 @@ def _dates(n: int, start: str, unit: str, rng: random.Random) -> list[str]:
 def process_log(rows: int, rng: random.Random):
     """장비 공정 로그. 시간축 + 측정값 + 판정. equipment_id -> line_id 함수 종속."""
     line_of = {f"C{i:02d}": f"L{(i % 3) + 1}" for i in range(1, 9)}
+    recipes = ["ETCH_A", "ETCH_B", "CLEAN", "STRIP"]
     equipment = [rng.choice(list(line_of)) for _ in range(rows)]
-    power = [round(rng.gauss(500, 18), 1) for _ in range(rows)]
+    recipe = [rng.choice(recipes) for _ in range(rows)]
+    power = [
+        round(
+            rng.gauss(505 if r == "ETCH_A" else 492 if r == "ETCH_B" else 470 if r == "CLEAN" else 515, 16),
+            1,
+        )
+        for r in recipe
+    ]
+    timestamps = _dates(rows, "2026-03-01", "minute", rng)
     df = pd.DataFrame(
         {
             "run_id": [f"P{i:06d}" for i in range(rows)],
             "equipment_id": equipment,
             "line_id": [line_of[e] for e in equipment],
-            "run_at": _dates(rows, "2026-03-01", "day", rng),
+            "run_at": timestamps,
             "power_value": power,
-            "chamber_temp": [round(rng.gauss(215, 4), 2) for _ in range(rows)],
-            "verdict": ["정상" if 470 <= p <= 530 else "이상" for p in power],
+            "chamber_temp": [
+                round(
+                    rng.gauss(212 if r.startswith("ETCH") else 198, 4.5),
+                    2,
+                )
+                for r in recipe
+            ],
+            "verdict": [
+                "정상" if 470 <= p <= 530 else "경고" if 455 <= p < 470 or 530 < p <= 545 else "이상"
+                for p in power
+            ],
         }
     )
     truth = {
@@ -70,19 +88,19 @@ def process_log(rows: int, rng: random.Random):
         },
         "identifier_roles": {"run_id": "primary", "equipment_id": "reference"},
         "grain_keys": ["run_id"],
-        "time_resolution": {"run_at": "Day"},
+        "time_resolution": {"run_at": "Minute"},
         "functional_dependencies": [["equipment_id", "line_id"]],
         "pii": {},
-        "categories": {"verdict": ["정상", "이상"]},
+        "categories": {"verdict": ["정상", "경고", "이상"]},
     }
     meta = {
-        "source_description": "반도체 식각 장비별 공정 실행 시점과 측정된 장비 출력값, 챔버 온도, 판정 결과를 기록한 테이블이다.",
+        "source_description": "반도체 식각/세정 장비별 공정 실행 시점과 장비 출력값, 챔버 온도, 판정 결과를 기록한 이벤트 로그 테이블이다.",
         "domain": "semiconductor",
         "column_descriptions": [
             {"컬럼명": "equipment_id", "표준용어": "설비ID", "표준용어_내용": "설비를 식별하는 표준 용어", "설명": "공정 수행 장비"},
             {"컬럼명": "power_value", "표준용어": "설비출력", "표준용어_내용": "설비의 실제 출력값", "설명": "RF Generator 실측 출력", "추가설명": "단위는 W"},
-            {"컬럼명": "chamber_temp", "설명": "챔버 내부 온도", "추가설명": "단위는 섭씨"},
-            {"컬럼명": "verdict", "설명": "공정 결과 판정"},
+            {"컬럼명": "chamber_temp", "설명": "챔버 내부 온도", "추가설명": "단위는 섭씨, 공정 구간별 열 안정성 판단에 사용"},
+            {"컬럼명": "verdict", "설명": "공정 결과 판정", "추가설명": "정상/경고/이상으로 판정"},
         ],
     }
     return df, truth, meta
@@ -90,7 +108,7 @@ def process_log(rows: int, rng: random.Random):
 
 def maintenance_history(rows: int, rng: random.Random):
     """정비 이력. 자유 텍스트 + 시각 해상도(분)."""
-    types = ["정기점검", "예방정비", "긴급수리", "부품교체"]
+    types = ["정기점검", "예방정비", "긴급수리", "부품교체", "진공계 교정", "소모품 교체"]
     # 자유 텍스트는 조합으로 만든다. 고정 문장 4개를 반복하면 카디널리티가
     # 낮아 실제로는 범주형이 되어버린다 - 정답 라벨과 데이터가 어긋난다.
     _parts_a = ["챔버 내부 세정", "RF 매칭 네트워크 튜닝", "펌프 오일 교체", "가스 라인 MFC 캘리브레이션",
@@ -99,7 +117,7 @@ def maintenance_history(rows: int, rng: random.Random):
                 "출력 편차 재측정", "누설 시험", "인터록 동작 확인"]
     _parts_c = ["작업 후 정상 판정", "재발 감시 필요", "부품 발주 요청", "익일 재점검 예정", "이상 없음"]
     actions = [
-        f"{a}을(를) 수행하고 {b}을(를) 실시함. {c}."
+        f"{a}을(를) 수행하고 {b}을(를) 실시함. 작업 메모: {c}."
         for a in _parts_a for b in _parts_b for c in _parts_c
     ]
     df = pd.DataFrame(
@@ -108,7 +126,7 @@ def maintenance_history(rows: int, rng: random.Random):
             "equipment_id": [f"C{rng.randint(1, 8):02d}" for _ in range(rows)],
             "maintenance_at": _dates(rows, "2026-03-01", "minute", rng),
             "maintenance_type": [rng.choice(types) for _ in range(rows)],
-            "duration_min": [rng.randint(15, 480) for _ in range(rows)],
+            "duration_min": [rng.randint(12, 720) for _ in range(rows)],
             "action_detail": [rng.choice(actions) for _ in range(rows)],
         }
     )
@@ -129,11 +147,12 @@ def maintenance_history(rows: int, rng: random.Random):
         "categories": {"maintenance_type": types},
     }
     meta = {
-        "source_description": "제조 장비별 정비 시점과 정비 유형, 소요 시간, 조치 내용을 기록한 테이블이다.",
+        "source_description": "제조 장비별 정비 시점, 정비 유형, 소요 시간, 조치 메모를 기록한 이력 테이블이다.",
         "domain": "semiconductor",
         "column_descriptions": [
             {"컬럼명": "equipment_id", "표준용어": "설비ID", "설명": "정비 대상 장비"},
             {"컬럼명": "duration_min", "설명": "정비 소요 시간", "추가설명": "단위는 분"},
+            {"컬럼명": "action_detail", "설명": "작업자가 남긴 정비 메모", "추가설명": "자유 서술 텍스트"},
         ],
     }
     return df, truth, meta
@@ -144,13 +163,13 @@ def operator_roster(rows: int, rng: random.Random):
     surnames = ["김", "이", "박", "최", "정", "강", "조", "윤", "장", "임", "한", "오"]
     givens = ["민준", "서연", "도윤", "하윤", "지호", "수아", "예준", "지우", "시우", "서준",
               "하은", "채원", "유진", "건우", "다인", "ราน".replace("ราน", "소율")]
-    shifts = ["주간", "야간", "심야"]
+    shifts = ["주간", "야간", "심야", "주말특근"]
     names = [rng.choice(surnames) + rng.choice(givens) for _ in range(rows)]
     df = pd.DataFrame(
         {
             "operator_id": [f"OP{i:05d}" for i in range(rows)],
             "operator_name": names,
-            "contact_email": [f"user{i:05d}@corp.example.com" for i in range(rows)],
+            "contact_email": [f"user{i:05d}@fab-ops.example.com" for i in range(rows)],
             "mobile": [f"010-{rng.randint(1000,9999)}-{rng.randint(1000,9999)}" for _ in range(rows)],
             "line_id": [f"L{rng.randint(1,3)}" for _ in range(rows)],
             "shift": [rng.choice(shifts) for _ in range(rows)],
@@ -176,11 +195,12 @@ def operator_roster(rows: int, rng: random.Random):
         "categories": {"shift": shifts},
     }
     meta = {
-        "source_description": "생산 라인 작업자의 소속과 근무조, 입사일을 관리하는 명부이다.",
+        "source_description": "생산 라인 작업자의 소속, 근무조, 연락처, 입사일을 관리하는 운영 명부이다.",
         "domain": "semiconductor",
         "column_descriptions": [
             {"컬럼명": "line_id", "표준용어": "라인ID", "설명": "소속 생산 라인"},
             {"컬럼명": "shift", "설명": "근무조"},
+            {"컬럼명": "contact_email", "설명": "사내 업무용 이메일"},
         ],
     }
     return df, truth, meta
@@ -192,7 +212,14 @@ def wide_sensor(rows: int, rng: random.Random):
     kinds = {"sample_id": "identifier"}
     for i in range(1, 25):
         col = f"sensor_{i:02d}"
-        data[col] = [round(rng.gauss(50 + i, 3), 3) for _ in range(rows)]
+        baseline = 50 + i
+        data[col] = [
+            round(
+                rng.gauss(baseline + (2.5 if j % 17 == 0 else 0.0), 3 + (i % 4) * 0.5),
+                3,
+            )
+            for j in range(rows)
+        ]
         kinds[col] = "numeric"
     df = pd.DataFrame(data)
     truth = {
@@ -205,7 +232,7 @@ def wide_sensor(rows: int, rng: random.Random):
         "categories": {},
     }
     meta = {
-        "source_description": "샘플별 센서 24종의 측정값을 기록한 테이블이다.",
+        "source_description": "샘플별 24개 센서 채널의 측정값을 넓은 형태로 기록한 공정 모니터링 테이블이다.",
         "domain": "semiconductor",
         "column_descriptions": [],
     }

@@ -1,127 +1,54 @@
-# MIGRATION — SH-ARD-asset-agent 핵심 모듈 교체
+# MIGRATION
 
-기존 레포 `seongwonM/SH-ARD-asset-agent`의 **엔진만** 이 설계로 바꾼다.
-바깥 껍데기(공개 API, 배치 스크립트, k8s, CI)는 그대로 둔다.
+`remove-compat` 이후 기준 문서.
 
-## 절대 바꾸지 않는 것
+현재 활성 구조는 레거시 호환 파사드 없이 직접 runner를 쓴다.
+
+- 실행 진입점: `src/agent/runner.py`
+- 로컬 실행: `examples/run_local.py`
+- 벤치/강건성 실행: `bench/run_bench.py`, `examples/run_robustness_test.py`
+- 핵심 결과 블록: `column_analysis`, `data_interpretation`, `asset_context`
+
+## 유지하는 것
 
 | 대상 | 이유 |
 |---|---|
-| `TableAssetContextBuilder.build()` 시그니처 | `run_from_csv.py`, `run_robustness_test.py`가 직접 호출 |
-| 반환 JSON 7개 키 | `analyze_robustness_test.py`가 이 모양에 결합 |
-| `examples/run_robustness_test.py` | **한 줄도 고치지 않는다** (아래 참조) |
-| `examples/analyze_robustness_test.py` | 동일 |
-| PVC 이름 `sh-ard-asset-agent-data` | 누적된 결과 JSONL과 이어달리기가 여기 있다 |
-| Secret 이름/키 | `create-secret-from-env.ps1`이 참조 |
+| 입력 데이터의 원본 컬럼과 의미 | 실제 실험/비교에서 보존해야 하는 축 |
+| dataset x column_descriptions 유무 x model x rep | robustness 비교 축 |
+| `asset_context` 중심 결과 | 최종 사용자 산출물 |
 
-### run_robustness_test를 왜 반드시 살려야 하는가
+## 자유롭게 바꿀 수 있는 것
 
-이 스크립트는 데이터셋 12개 x column_descriptions 유무 2가지 x 모델 3종 x 20회
-= 최대 1440회를 돌려 **반복시행 강건성과 모델별 차이**를 측정한다.
-결과는 PVC에 누적되고 재실행 시 이어달리기를 한다.
+| 대상 | 원칙 |
+|---|---|
+| mock 데이터 값 분포/텍스트 다양성 | 원본 컬럼 의미만 유지하면 자유롭게 고도화 |
+| 중간 산출물 구조 | `column_analysis`, `data_interpretation`, `asset_context`만 유지 |
+| robustness 결과 JSONL의 부가 필드 | 비교/분석에 유리하면 추가 가능 |
 
-출력 스키마를 바꾸면 **이미 쌓인 결과와 신규 결과를 비교할 수 없다.**
-엔진을 바꾼 효과를 측정하려는 것인데 측정 기준선이 사라진다.
-그래서 `src/agent/compat.py`가 옛 계약을 그대로 재현한다.
-
-신규 정보(probe 검증, skill 선택 궤적)는 옛 키를 건드리지 않고
-`asset_context.verification` / `trace`로 **추가만** 한다.
-`analyze_robustness_test.py`는 모르는 키를 무시하므로 안전하다.
-
----
-
-## 교체 대상
+## 현재 구조 요약
 
 ```
-바꾼다
-  asset_agent/skills/structured_asset/graph.py          → plan/act 루프
-  asset_agent/skills/structured_asset/semantic_profiler.py → 컬럼 skill들로 분해
-  asset_agent/skills/structured_asset/prompts.py        → SKILL.md 본문으로 이동
-
-유지 + 재사용
-  asset_agent/core/llm_client.py       RPM 스로틀. 새 deps가 감싼다
-  asset_agent/core/json_utils.py       JSON 복구
-  asset_agent/skills/.../csv_repair.py 깨진 CSV 복구
-  asset_agent/skills/.../sampling.py   표본 추출
-  asset_agent/core/config.py           HarnessConfig
-
-신규
-  src/agent/probes.py      데이터로 주장을 반증
-  src/agent/planner.py     gap → 배치
-  src/agent/compat.py      옛 계약 파사드
-  skills/*/SKILL.md        판단을 선언으로
+src/agent/graph.py        plan/act 루프
+src/agent/planner.py      gap 기반 배치 선택
+src/agent/executor.py     skill 실행 + probe/guard 검증
+src/agent/runner.py       현재 표준 실행 진입점
+src/agent/llm.py          OpenAI-compatible runtime deps
+skills/*                  선언형 skill + handler
+examples/run_local.py     단일 CSV 실행
+examples/run_robustness_test.py  반복 강건성 실행
+bench/run_bench.py        mock truth 기준 벤치
 ```
 
 ---
 
-## Claude Code 프롬프트 (단계별)
+## 현재 변경 원칙
 
-한 번에 다 시키지 말 것. 각 단계 끝에 `make test`가 통과해야 다음으로 간다.
+1. `compat.py`는 더 이상 유지하지 않는다.
+2. 활성 코드 경로는 모두 `TableAssetContextRunner`를 사용한다.
+3. 문서/테스트/벤치는 현재 runner 결과 구조를 기준으로 유지한다.
+4. mock 데이터는 단순 예제가 아니라, 실제 분포/반례/자유 텍스트를 포함하는 방향으로 키운다.
 
-### 0단계 — 파악
-
-```
-이 레포는 기존 SH-ARD-asset-agent의 엔진을 교체하려는 프로젝트야.
-먼저 README.md, CLAUDE.md, MIGRATION.md를 읽고,
-src/agent/compat.py가 무엇을 보장하는지 설명해줘.
-그 다음 make test로 31개 테스트가 통과하는지 확인해줘.
-
-특히 이 질문에 답할 수 있어야 해:
-run_robustness_test.py를 고치지 않고도 새 엔진을 쓸 수 있는 이유가 뭐야?
-```
-
-### 1단계 — 기존 레포에 이식
-
-```
-기존 레포 SH-ARD-asset-agent를 <경로>에 클론해뒀어.
-이 프로젝트의 src/agent/ 와 skills/ 를 거기로 옮기되, 다음을 지켜:
-
-1. asset_agent/skills/structured_asset/__init__.py의 export는 그대로 유지해.
-   TableAssetContextBuilder, StructuredAssetConfig, repair_ragged_csv 세 개를
-   계속 export해야 examples/*.py가 import 에러 없이 돈다.
-
-2. TableAssetContextBuilder는 src/agent/compat.py의 것으로 교체해.
-   단 생성자가 (client, config) 위치 인자를 계속 받아야 해 —
-   run_robustness_test.py가 TableAssetContextBuilder(client=..., config=...)로 부른다.
-
-3. StructuredAssetConfig는 없애지 말고 그대로 둬.
-   robustness 스크립트가 semantic_model/description_model/search_model/
-   requests_per_minute를 지정해서 모델별 비교를 한다. 이 필드들이 새 엔진의
-   설정으로 흘러가도록 매핑해줘.
-
-4. asset_agent/core/llm_client.py의 LLMClient는 버리지 말고
-   RuntimeDeps가 내부에서 쓰도록 감싸. RPM 스로틀 상태를 배치 전체가
-   공유해야 Gateway 한도를 지킨다.
-
-옮긴 뒤 examples/run_from_csv.py가 import 에러 없이 뜨는지 확인해줘.
-```
-
-### 2단계 — 계약 회귀 테스트
-
-```
-tests/test_legacy_contract.py를 기존 레포로 함께 옮기고,
-실제 analyze_robustness_test.py가 읽는 필드를 전부 커버하는지 확인해줘.
-
-analyze_robustness_test.py를 읽고, 거기서 result[...]로 접근하는 키를
-전부 뽑아서 테스트에 assert로 추가해. 하나라도 빠지면
-1440회를 다 돌린 뒤에야 집계가 깨진 걸 알게 된다.
-```
-
-### 3단계 — 드라이런 비교
-
-```
-robustness 데이터셋 1개, reps=2, 모델 1개로 옛 엔진과 새 엔진을 각각 돌려서
-결과 JSON을 비교해줘. 확인할 것:
-
-- 7개 최상위 키가 동일한가
-- asset_context_details의 6개 필드가 모두 있는가
-- issues 항목이 {stage, error_type, message} 3키인가
-- performance에 옛 8개 키가 다 있는가
-
-다른 점이 있으면 compat.py를 고쳐. 스크립트를 고치지 마.
-```
-
-### 4단계 — k8s 반영
+## k8s 반영
 
 ```
 k8s/ 아래 매니페스트를 기존 레포 것과 병합해줘.
@@ -187,29 +114,8 @@ Gateway RPM=360이면 초당 6건이다. 응답 지연 2초 가정 시 동시 12
 
 ---
 
-## 마이그레이션 후 첫 측정
+## 다음 작업
 
-옛 엔진과 새 엔진의 차이를 보려면 **같은 데이터셋·같은 모델**로 돌려야 한다.
-
-```powershell
-# 옛 결과 백업 (덮어쓰지 말 것)
-kubectl cp sh-ard-asset-agent:/data/robustness_results.jsonl ./results/before.jsonl
-kubectl exec sh-ard-asset-agent -- mv /data/robustness_results.jsonl /data/robustness_before.jsonl
-
-# 새 엔진으로 재실행
-kubectl apply -f k8s/robustness-job.yaml
-```
-
-새로 볼 수 있게 된 지표:
-
-| 지표 | 위치 | 의미 |
-|---|---|---|
-| `probe_coverage` | `asset_context.verification` | 주장 중 데이터로 검증 가능했던 비율 |
-| `refuted` | 동일 | 반증되어 폐기된 주장 |
-| `unverified_count` | 동일 | 검증 수단이 없는 주장 = 사람이 볼 큐 |
-| `blocked` | `performance` | 반복 실패로 격리된 (skill, 컬럼) |
-| `trace` | 최상위 | 회차별 skill 선택 궤적 |
-
-**반복시행 강건성을 볼 때 `trace`를 함께 보라.** 같은 입력인데 결과가
-달랐다면, 그게 LLM 출력 차이인지 skill 선택 경로 차이인지 여기서 갈린다.
-옛 엔진은 경로가 고정이라 이 구분 자체가 불가능했다.
+- mock 데이터셋을 더 현실적으로 확장
+- `examples/run_robustness_test.py` 결과 집계 스크립트 추가/정리
+- 실제 실험 데이터셋으로 kind/grain/probe 임계값 보정

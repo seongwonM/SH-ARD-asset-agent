@@ -110,23 +110,21 @@ skills/<snake_name>/
 - 가드에서 모든 문자열 무차별 검사
 - probe 실행 실패를 `passed=False`로 처리 — 실행 실패는 반증이 아니다
 
-## 기존 레포 연동
+## 실행 구조
 
-`MIGRATION.md` 참조. 핵심 제약 하나만 여기 옮긴다.
+현재 활성 실행 경로는 `src/agent/runner.py` 기준이다.
 
-**`src/agent/compat.py`의 출력 키를 바꾸지 말 것.**
-기존 `run_robustness_test.py`(최대 1440회 배치)와 `analyze_robustness_test.py`가
-이 모양에 결합돼 있고, 결과는 PVC에 누적된다. 키를 바꾸면 옛 결과와
-새 결과를 비교할 수 없어 엔진 교체 효과를 측정할 수 없다.
-신규 정보는 **추가만** 한다(`asset_context.verification`, `trace`).
+- `examples/run_local.py`는 direct runner를 사용한다.
+- `bench/run_bench.py`, `examples/run_robustness_test.py`도 같은 runner를 사용한다.
+- 결과의 핵심 블록은 `column_analysis`, `data_interpretation`, `asset_context`다.
 
-`tests/test_legacy_contract.py`가 이 계약을 지킨다. 실패하면 compat을 고치고,
-배치 스크립트는 건드리지 않는다.
+`tests/test_legacy_contract.py`는 더 이상 레거시 호환성 테스트가 아니라,
+현재 runner 출력 구조가 유지되는지 검증한다.
 
 ## 남은 작업
 
 `HANDOFF.md`에 우선순위와 함께 정리되어 있다. 가장 급한 것:
 
-1. `src/agent/llm.py: RuntimeDeps._post()` — 실제 vLLM 호출부 (현재 `NotImplementedError`)
+1. 실제 mock 데이터 고도화 및 robustness 축 확장
 2. `VLLM_STRUCTURED_MODE` 확정 — 서빙 버전 문서 확인
 3. 실제 테이블로 `profile_table/handler.py`의 kind 판정 임계값 검증
