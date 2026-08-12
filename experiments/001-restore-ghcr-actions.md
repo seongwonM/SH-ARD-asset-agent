@@ -19,10 +19,12 @@
 
 ## 결과
 
-- Actions test:
-- Docker build/push:
+- Actions test: 첫 run `#53` 성공(28초)
+- Docker build/push: 첫 run은 Buildx builder 없이 `type=gha` cache export를 사용해
+  실패. `docker/setup-buildx-action@v4`를 추가하고 Docker Actions를 Node 24 기반
+  현행 major로 갱신한 뒤 재실행한다.
 - 생성된 태그:
-- 이상 현상:
+- 이상 현상: 최초 복원에 사용한 고정 Action SHA들이 Node 20 deprecation 경고를 냈다.
 
 ## 결론
 
