@@ -176,6 +176,8 @@ make trace           # 궤적 출력
 
 vLLM 서버만 있으면 된다(k8s 불필요). 자세한 건 `BENCH.md`.
 
+코드 가설을 병렬로 검증할 때는 `git worktree` 기반의 `EXPERIMENTS.md` 규칙을 따른다.
+
 ```bash
 make check           # 엔드포인트 점검 — structured output이 실제로 강제되는지
 make mock            # 정답지 포함 mock 데이터 생성
