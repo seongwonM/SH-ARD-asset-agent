@@ -5,6 +5,8 @@ requires: [table_profile, column_semantics]
 provides: [verification]
 applies_when:
   always: true
+role: verifier
+capabilities: [probe_verification, contradiction_check]
 cost: free
 per_column: false
 max_attempts: 1

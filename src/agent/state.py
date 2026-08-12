@@ -16,7 +16,7 @@ from typing import Annotated, Any, Dict, List, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .contract import ColumnKind, Contribution, Slot
+from .contract import Artifact, ColumnKind, Contribution, Slot
 
 
 def _merge_dict(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,6 +72,7 @@ class Board(BaseModel):
     values: Dict[str, Any] = Field(default_factory=dict)
     keyed: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     evidence: Dict[str, List[str]] = Field(default_factory=dict)
+    artifacts: List[Dict[str, Any]] = Field(default_factory=list)
 
     def put(self, c: Contribution) -> None:
         if c.key:
@@ -80,6 +81,9 @@ class Board(BaseModel):
             self.values[c.slot.value] = c.value
         if c.evidence:
             self.evidence.setdefault(c.slot.value, []).extend(c.evidence)
+
+    def add_artifact(self, artifact: Artifact) -> None:
+        self.artifacts.append(artifact.model_dump(mode="json"))
 
     def has(self, slot: Slot) -> bool:
         return slot.value in self.values or bool(self.keyed.get(slot.value))
@@ -127,6 +131,7 @@ class AgentState(TypedDict, total=False):
     max_iterations: int
     budget: Annotated[Dict[str, Any], _merge_dict]  # llm_calls, probe_runs, max_*
     requested_slots: List[str]  # skill이 실행 중 요청한 슬롯 (SkillResult.requests)
+    analysis_queue: List[Dict[str, Any]]  # 추가 분석 필요 목록
     history: Annotated[List[Dict[str, Any]], operator.add]
     blocked: List[str]  # "skill::target" 형태. 반복 실패한 조합
     plan_note: str  # 마지막 플래닝 판단 근거 (관찰성)
@@ -163,6 +168,7 @@ def new_state(
         max_iterations=max_iterations,
         budget={"llm_calls": 0, "probe_runs": 0, "max_llm_calls": max_llm_calls},
         requested_slots=[],
+        analysis_queue=[],
         history=[],
         blocked=[],
         plan_note="",

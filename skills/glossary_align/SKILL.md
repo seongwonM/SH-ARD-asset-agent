@@ -5,6 +5,8 @@ requires: [table_profile]
 provides: [glossary]
 applies_when:
   always: true
+role: interpreter
+capabilities: [glossary_alignment]
 cost: low
 per_column: false
 max_attempts: 2

@@ -124,6 +124,14 @@ class MockDeps(SkillDeps):
                 key_columns=[unique_like] if retry else [repeated],
                 confidence=0.94,
             )
+        if name == "PlanOut":
+            return model_cls(
+                focus="결정론적 evidence를 바탕으로 컬럼 의미와 행 단위를 해석할 준비가 됐다.",
+                rationale="프로파일, 분포, 패턴, 조인 후보, 제약, 품질, 컴플라이언스가 채워져 후속 해석이 가능하다.",
+                ready_slots=["column_semantics", "grain", "verification"],
+                requested_slots=[],
+                confidence=0.91,
+            )
         if name == "ContextOut":
             # 검색어에 실제 컬럼명만 넣는다. 하드코딩하면 다른 픽스처에서
             # 가드에 막혀 테스트가 vacuous하게 실패한다.

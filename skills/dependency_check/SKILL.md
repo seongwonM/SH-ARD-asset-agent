@@ -5,6 +5,8 @@ requires: [table_profile]
 provides: [constraints]
 applies_when:
   min_columns: 2
+role: observer
+capabilities: [functional_dependency_scan]
 cost: free
 per_column: false
 max_attempts: 1

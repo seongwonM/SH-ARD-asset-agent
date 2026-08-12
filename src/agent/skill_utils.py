@@ -75,3 +75,18 @@ def semantic_result(skill: str, ctx: SkillContext, payload: Dict, confidence: fl
     ]
     contribs.extend(extra_slots or [])
     return SkillResult(skill=skill, contributions=contribs)
+
+
+def board_artifacts(ctx: SkillContext) -> List[Dict]:
+    return list(ctx.board.get("artifacts", []))
+
+
+def artifact_lines(ctx: SkillContext, limit: int = 24) -> str:
+    lines = []
+    for item in board_artifacts(ctx)[:limit]:
+        key = f"::{item.get('key')}" if item.get("key") else ""
+        lines.append(
+            f"- {item.get('role','')} / {item.get('artifact_type','')} / "
+            f"{item.get('slot','')}{key}: {str(item.get('payload'))[:220]}"
+        )
+    return "\n".join(lines) or "(없음)"

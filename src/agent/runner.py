@@ -86,15 +86,26 @@ def _to_result(
 
     profile = values.get(Slot.TABLE_PROFILE.value) or {}
     semantics = keyed.get(Slot.COLUMN_SEMANTICS.value, {})
+    distribution_profiles = keyed.get(Slot.DISTRIBUTION_PROFILE.value, {})
+    value_patterns = keyed.get(Slot.VALUE_PATTERNS.value, {})
+    join_candidates = keyed.get(Slot.JOIN_CANDIDATES.value, {})
     grain = values.get(Slot.GRAIN.value) or {}
     linkage = values.get(Slot.LINKAGE.value) or []
     constraints = values.get(Slot.CONSTRAINTS.value) or {}
+    quality_risks = values.get(Slot.QUALITY_RISKS.value) or {}
     compliance = values.get(Slot.COMPLIANCE.value) or {}
     glossary = values.get(Slot.GLOSSARY.value) or {}
+    analysis_plan = values.get(Slot.ANALYSIS_PLAN.value) or {}
     ctx = values.get(Slot.ASSET_CONTEXT.value) or {}
     verification = values.get(Slot.VERIFICATION.value) or {}
 
-    columns = _build_columns(profile, semantics)
+    columns = _build_columns(
+        profile,
+        semantics,
+        distribution_profiles,
+        value_patterns,
+        join_candidates,
+    )
     issues = _collect_issues(final, verification)
     performance = _build_performance(final, deps, started)
 
@@ -112,27 +123,33 @@ def _to_result(
         },
         "grain": grain.get("grain", ""),
         "grain_keys": grain.get("key_columns", []),
+        "record_unit": grain.get("grain", ""),
         "linkage": linkage,
         "constraints": constraints,
+        "quality_risks": quality_risks,
         "compliance": compliance,
         "glossary": glossary,
         "verification": _normalize_verification(verification),
+        "analysis_plan": analysis_plan,
         "columns": columns,
     }
 
     data_interpretation = {
         "grain": asset_context["grain"],
         "grain_keys": asset_context["grain_keys"],
+        "record_unit": asset_context["record_unit"],
         "time_axes": [
-            {"name": c["name"], "resolution": c.get("resolution", "")}
+            {"name": c["name"], "resolution": c.get("resolution", ""), "time_unit": c.get("resolution", "")}
             for c in columns
             if c.get("profiled_kind") == "temporal"
         ],
         "linkage": linkage,
         "constraints": constraints,
+        "quality_risks": quality_risks,
         "compliance": compliance,
         "glossary": glossary,
         "verification": asset_context["verification"],
+        "analysis_plan": analysis_plan,
     }
 
     return {
@@ -158,15 +175,24 @@ def _to_result(
                 "target": h.get("target"),
                 "ok": h.get("ok"),
                 "attempts": h.get("attempts"),
+                "artifacts": h.get("artifacts"),
+                "analysis_needs": h.get("analysis_needs"),
                 "note": h.get("note"),
                 "reason": h.get("reason"),
             }
             for h in final.get("history", [])
         ],
+        "analysis_artifacts": board.artifacts,
     }
 
 
-def _build_columns(profile: Dict[str, Any], semantics: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_columns(
+    profile: Dict[str, Any],
+    semantics: Dict[str, Any],
+    distribution_profiles: Dict[str, Any],
+    value_patterns: Dict[str, Any],
+    join_candidates: Dict[str, Any],
+) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for col in profile.get("columns", []):
         name = col["name"]
@@ -184,6 +210,12 @@ def _build_columns(profile: Dict[str, Any], semantics: Dict[str, Any]) -> List[D
             "samples": col.get("samples", []),
         }
         merged.update(semantic)
+        if name in distribution_profiles:
+            merged["distribution_profile"] = distribution_profiles[name]
+        if name in value_patterns:
+            merged["value_pattern"] = value_patterns[name]
+        if name in join_candidates:
+            merged["join_candidate"] = join_candidates[name]
         out.append(merged)
     return out
 

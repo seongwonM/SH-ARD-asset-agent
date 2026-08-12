@@ -5,6 +5,8 @@ requires: [table_profile]
 provides: [column_semantics]
 applies_when:
   column_kinds: [numeric]
+role: interpreter
+capabilities: [numeric_semantics]
 cost: low
 per_column: true
 max_attempts: 3

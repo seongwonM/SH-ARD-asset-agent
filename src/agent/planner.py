@@ -28,14 +28,31 @@ from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .contract import COST_WEIGHT, AppliesWhen, Cost, Slot
+from .contract import COST_WEIGHT, AppliesWhen, Cost, SkillRole, Slot
 from .registry import SkillRegistry
 from .state import AgentState, Board, ColumnFact, Gap
 
 MAX_BATCH = 8  # 동시 실행 상한. deps의 LLM 동시성 제한과 맞춘다.
 
 # 대상별로 채워지는 슬롯. 이 슬롯만 쓰는 작업은 병렬 안전하다.
-KEYED_SLOTS = {Slot.COLUMN_SEMANTICS, Slot.LINKAGE}
+KEYED_SLOTS = {
+    Slot.COLUMN_SEMANTICS,
+    Slot.DISTRIBUTION_PROFILE,
+    Slot.VALUE_PATTERNS,
+    Slot.JOIN_CANDIDATES,
+    Slot.LINKAGE,
+}
+
+EVIDENCE_SLOTS = {
+    Slot.TABLE_PROFILE,
+    Slot.DISTRIBUTION_PROFILE,
+    Slot.VALUE_PATTERNS,
+    Slot.JOIN_CANDIDATES,
+    Slot.CONSTRAINTS,
+    Slot.QUALITY_RISKS,
+    Slot.COMPLIANCE,
+    Slot.GLOSSARY,
+}
 
 
 class Candidate(BaseModel):
@@ -85,19 +102,30 @@ def compute_gaps(
         if missing:
             gaps.append(Gap(slot=Slot.COLUMN_SEMANTICS, targets=missing))
 
-    # 프로파일만 있으면 바로 채울 수 있는 슬롯 (컬럼 의미를 기다리지 않는다).
-    # 정합성/PII/표준용어는 컬럼 해석과 독립이라 앞에서 확보해두면
-    # 이후 해석·합성 단계가 이 사실을 근거로 쓸 수 있다.
+    # 먼저 결정론적 evidence를 충분히 채운다.
     if board.has(Slot.TABLE_PROFILE):
-        for slot in (Slot.CONSTRAINTS, Slot.COMPLIANCE, Slot.GLOSSARY):
+        for slot in (
+            Slot.DISTRIBUTION_PROFILE,
+            Slot.VALUE_PATTERNS,
+            Slot.JOIN_CANDIDATES,
+            Slot.CONSTRAINTS,
+            Slot.QUALITY_RISKS,
+            Slot.COMPLIANCE,
+            Slot.GLOSSARY,
+        ):
             if not board.has(slot):
                 gaps.append(Gap(slot=slot))
 
-    semantic_ready = bool(facts) and len(board.keys_of(Slot.COLUMN_SEMANTICS)) >= max(1, len(facts) // 2)
+    # evidence가 어느 정도 쌓인 뒤에만 "다음에 뭘 더 볼지" 계획을 세운다.
+    evidence_ready = all(board.has(slot) for slot in EVIDENCE_SLOTS if slot != Slot.GLOSSARY)
+    if evidence_ready and not board.has(Slot.ANALYSIS_PLAN):
+        gaps.append(Gap(slot=Slot.ANALYSIS_PLAN))
+
+    semantic_ready = board.has(Slot.ANALYSIS_PLAN) and bool(facts)
     for slot in (Slot.GRAIN, Slot.LINKAGE, Slot.TOPIC, Slot.SUMMARY, Slot.SEARCH_TERMS, Slot.VERIFICATION):
         if board.has(slot):
             continue
-        blocked = [] if semantic_ready else [Slot.COLUMN_SEMANTICS]
+        blocked = [] if semantic_ready else [Slot.ANALYSIS_PLAN]
         gaps.append(Gap(slot=slot, blocked_by=blocked))
 
     for name in list(goal_slots) + list(requested or []):
@@ -207,6 +235,14 @@ def score_candidates(
                 reasons.append(f"kind 특화({fact.kind.value})")
             if m.applies_when.always:
                 score -= 0.2  # 범용 fallback은 후순위
+            if m.role == SkillRole.OBSERVER:
+                score += 0.6
+                reasons.append("evidence 우선")
+            elif m.role == SkillRole.DELIBERATOR:
+                score += 0.2
+                reasons.append("analysis plan")
+            elif m.role == SkillRole.SYNTHESIZER:
+                score -= 0.1
             score -= COST_WEIGHT.get(m.cost, 0.25)
 
             out.append(

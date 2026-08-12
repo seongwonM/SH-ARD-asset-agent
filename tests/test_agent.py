@@ -104,7 +104,7 @@ def test_probe_refutes_false_primary_key():
 
 
 def test_probe_refutes_time_resolution():
-    """날짜만 있는 컬럼에 Hour 해상도를 주장하면 반증된다."""
+    """날짜만 있는 컬럼에 Hour 시간 단위를 주장하면 반증된다."""
     r = run(MockDeps())
     acts = [h for h in r["history"] if h.get("skill") == "temporal-axis"]
     assert acts and acts[0]["attempts"] >= 2

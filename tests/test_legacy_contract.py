@@ -78,6 +78,8 @@ def test_column_and_data_blocks_present():
     assert "summary" in r["column_analysis"]
     assert "columns" in r["column_analysis"]
     assert "grain" in r["data_interpretation"]
+    assert "record_unit" in r["data_interpretation"]
+    assert "quality_risks" in r["data_interpretation"]
     assert "verification" in r["data_interpretation"]
     names = {c["name"] for c in r["column_analysis"]["columns"]}
     assert names == set(DF.columns)
@@ -122,6 +124,8 @@ def test_new_fields_are_additive_only():
     r = _build()
     assert "trace" in r and isinstance(r["trace"], list)
     assert "verification" in r["asset_context"]
+    assert "quality_risks" in r["asset_context"]
+    assert "record_unit" in r["asset_context"]
     assert "asset_context_details" in r["asset_context"]
     assert "column_analysis" in r
     assert "data_interpretation" in r
