@@ -6,3 +6,5 @@ venv/
 .env
 runs/
 .DS_Store
+data/mock/
+results/

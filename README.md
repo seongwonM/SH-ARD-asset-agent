@@ -168,9 +168,24 @@ tests/                 22 passed
 
 ```bash
 make install
-make test     # vLLM 없이 mock으로 전 구간 실행
-make trace    # 궤적 출력
+make test            # vLLM 없이 mock으로 전 구간 실행
+make trace           # 궤적 출력
 ```
+
+## 성능 측정
+
+vLLM 서버만 있으면 된다(k8s 불필요). 자세한 건 `BENCH.md`.
+
+```bash
+make check           # 엔드포인트 점검 — structured output이 실제로 강제되는지
+make mock            # 정답지 포함 mock 데이터 생성
+make bench-offline   # LLM 없이 하네스 오버헤드 (비용 0)
+make bench           # 실제 측정
+```
+
+측정을 두 종류로 나눈다. **정답 대비 정확도**(kind/role/grain/해상도/PII/함수종속)와
+**정답 없이 재는 것**(비용/재시도율/커버리지/검증률/반복 일관성)이다.
+섞어서 보면 숫자가 거짓말을 한다 — 반복 일관성 1.00은 같은 오답을 20번 낸 경우에도 나온다.
 
 실제 연결은 `src/agent/llm.py: RuntimeDeps._post()` 하나만 구현하면 된다.
 나머지는 `HANDOFF.md` 참고.

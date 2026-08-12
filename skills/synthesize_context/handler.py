@@ -48,6 +48,7 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
     compliance = values.get(Slot.COMPLIANCE.value, {})
     glossary = values.get(Slot.GLOSSARY.value, {})
 
+    profiled_kinds = {c["name"]: c.get("kind", "") for c in profile.get("columns", [])}
     refuted_cols = _refuted_columns(verification)
     usable = {n: v for n, v in semantics.items() if n not in refuted_cols}
 
@@ -85,7 +86,10 @@ async def run(ctx: SkillContext, deps: SkillDeps) -> SkillResult:
         "key_points": out.key_points,
         "use_cases": out.use_cases,
         "grain": grain.get("grain", ""),
-        "columns": [{"name": n, **v} for n, v in usable.items()],
+        "grain_keys": grain.get("key_columns", []),
+        "columns": [
+            {"name": n, "profiled_kind": profiled_kinds.get(n, ""), **v} for n, v in usable.items()
+        ],
         "linkage": list(keyed.get(Slot.LINKAGE.value, {}).values()),
         "coverage": coverage,
         # 신규 슬롯은 요약 생성에 쓰지 않고 그대로 실어 나른다.

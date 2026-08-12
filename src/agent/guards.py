@@ -31,6 +31,19 @@ FORBIDDEN_TERMS = ("조인", "join", "외래키", "foreign key", "때문에", "�
 # contributions의 value dict에서 자연어로 간주할 키
 NL_KEYS = ("summary", "description", "meaning", "purpose", "topic", "note", "grain")
 
+# 시스템 내부 어휘. 컬럼명이 아니지만 설명에 자연스럽게 등장한다.
+#
+# 이게 없으면 "이 컬럼은 free_text 형태다" 같은 정상 문장이
+# "입력에 없는 식별자: free_text"로 오탐되어 컬럼 전체가 격리된다.
+# 실제로 벤치에서 컬럼 2개가 이 이유로 통째로 빠졌다.
+# 가드의 false positive는 false negative보다 위험하다 - 전부 막히면
+# 가드를 꺼둔 것과 결과가 같아진다.
+INTERNAL_VOCAB = {
+    "free_text", "primary_key", "foreign_key", "data_type", "date_time",
+    "time_series", "column_name", "table_name", "asset_context", "not_found",
+    "sample_value", "source_description", "use_case", "key_point",
+}
+
 
 @dataclass
 class GuardContext:
@@ -69,9 +82,11 @@ def run_guards(result: SkillResult, ctx: GuardContext) -> List[Violation]:
         texts.extend(_nl_texts(c.value))
 
     violations: List[Violation] = []
-    allowed_ids = {c.lower() for c in ctx.column_names} | {
-        t.lower() for t in _SNAKE.findall(ctx.grounding_text)
-    }
+    allowed_ids = (
+        {c.lower() for c in ctx.column_names}
+        | {t.lower() for t in _SNAKE.findall(ctx.grounding_text)}
+        | INTERNAL_VOCAB
+    )
 
     for text in texts:
         # 1) 지어낸 컬럼명/식별자

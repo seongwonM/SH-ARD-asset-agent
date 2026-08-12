@@ -89,14 +89,34 @@ def _classify(name, series, ratio, avg_len, dt_ratio) -> ColumnKind:
     low = name.lower()
     if pd.api.types.is_datetime64_any_dtype(series) or dt_ratio >= 0.9:
         return ColumnKind.TEMPORAL
-    if low.endswith(ID_SUFFIX) or low == "id" or ratio >= 0.98:
+
+    # 컬럼명이 식별자 형태면 타입과 무관하게 식별자다.
+    if low.endswith(ID_SUFFIX) or low == "id":
         return ColumnKind.IDENTIFIER
+
+    is_numeric = pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series)
+
+    # 연속 측정값은 거의 모든 값이 서로 다르다. 고유값 비율만 보고 식별자로
+    # 판정하면 센서·계측 컬럼이 통째로 오분류된다(실측 24/25 오분류).
+    # 실수형은 어떤 비율이든 측정값으로 본다. 정수형만 이름 힌트 없이
+    # 유일성이 높을 때 식별자 후보로 남긴다.
+    if is_numeric:
+        if pd.api.types.is_float_dtype(series):
+            return ColumnKind.NUMERIC
+        if ratio >= 0.98 and _looks_like_code(series):
+            return ColumnKind.IDENTIFIER
+        return ColumnKind.NUMERIC
+
     if SPATIAL_PAT.search(low):
         return ColumnKind.SPATIAL
-    if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
-        return ColumnKind.NUMERIC
+
+    # 텍스트인데 값이 거의 다 다르면 식별자
+    if ratio >= 0.98:
+        return ColumnKind.IDENTIFIER
+
     if avg_len >= 40:
         return ColumnKind.FREE_TEXT
+
     distinct = series.dropna().nunique()
     rows = len(series)
     # distinct_ratio 임계값만 쓰면 행이 적을 때 무너진다. 4행짜리 표본에서
@@ -104,4 +124,18 @@ def _classify(name, series, ratio, avg_len, dt_ratio) -> ColumnKind:
     # 행이 적을 때는 절대 개수로, 많을 때는 비율로 판정한다.
     if 0 < distinct <= 30 and (rows < 100 or ratio <= 0.05):
         return ColumnKind.CATEGORICAL
+
+    # 짧지만 값이 다양한 텍스트(사람 이름 등). 범주도 식별자도 아니면 텍스트로 본다.
+    if distinct > 30 and ratio > 0.1:
+        return ColumnKind.FREE_TEXT
+
     return ColumnKind.UNKNOWN
+
+
+def _looks_like_code(series) -> bool:
+    """정수 컬럼이 코드/일련번호처럼 보이는가. 값이 0 이상이고 자릿수가 일정하면 그렇다."""
+    s = series.dropna()
+    if not len(s) or (s < 0).any():
+        return False
+    widths = s.astype("int64").astype(str).str.len()
+    return bool(widths.nunique() <= 2)
