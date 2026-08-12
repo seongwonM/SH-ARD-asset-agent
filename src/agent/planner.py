@@ -96,11 +96,14 @@ def compute_gaps(
     if not board.has(Slot.TABLE_PROFILE):
         gaps.append(Gap(slot=Slot.TABLE_PROFILE))
 
+    analysis_ready = board.has(Slot.ANALYSIS_PLAN)
+
     if facts:
         done = set(board.keys_of(Slot.COLUMN_SEMANTICS))
         missing = [f.name for f in facts if f.name not in done]
         if missing:
-            gaps.append(Gap(slot=Slot.COLUMN_SEMANTICS, targets=missing))
+            blocked = [] if analysis_ready else [Slot.ANALYSIS_PLAN]
+            gaps.append(Gap(slot=Slot.COLUMN_SEMANTICS, targets=missing, blocked_by=blocked))
 
     # 먼저 결정론적 evidence를 충분히 채운다.
     if board.has(Slot.TABLE_PROFILE):
@@ -121,7 +124,7 @@ def compute_gaps(
     if evidence_ready and not board.has(Slot.ANALYSIS_PLAN):
         gaps.append(Gap(slot=Slot.ANALYSIS_PLAN))
 
-    semantic_ready = board.has(Slot.ANALYSIS_PLAN) and bool(facts)
+    semantic_ready = analysis_ready and bool(facts)
     for slot in (Slot.GRAIN, Slot.LINKAGE, Slot.TOPIC, Slot.SUMMARY, Slot.SEARCH_TERMS, Slot.VERIFICATION):
         if board.has(slot):
             continue
