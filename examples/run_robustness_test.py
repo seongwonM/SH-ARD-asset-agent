@@ -8,12 +8,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pandas as pd
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from agent.csv_repair import repair_ragged_csv  # noqa: E402
 from agent.runner import TableAssetContextRunner  # noqa: E402
 from bench.scoring import score_against_truth, score_process  # noqa: E402
 from examples.run_local import build_column_descriptions, load_dotenv  # noqa: E402
@@ -90,7 +89,14 @@ def main() -> None:
         runner = TableAssetContextRunner(deps=deps)
 
         for ds in datasets:
-            df = pd.read_csv(ds["csv"])
+            try:
+                df = repair_ragged_csv(ds["csv"])
+            except Exception as exc:  # noqa: BLE001 - CSV 하나가 깨져도 나머지 데이터셋은 계속 돈다
+                print(
+                    f"dataset={ds['name']}: {ds['csv']}를 읽지 못해 건너뜀 - {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                continue
             source_description = ds["metadata"].get("source_description")
             full_desc = build_column_descriptions(ds["metadata"])
 

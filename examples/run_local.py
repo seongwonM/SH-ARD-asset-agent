@@ -26,12 +26,11 @@ import os
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT))  # bench 패키지 접근용
 
+from agent.csv_repair import repair_ragged_csv  # noqa: E402
 from agent.llm import RuntimeDeps  # noqa: E402
 from agent.runner import TableAssetContextRunner  # noqa: E402
 
@@ -139,7 +138,7 @@ def main() -> None:
 
     csv_path = Path(args.csv_path)
     asset_name = args.asset_name or csv_path.stem
-    df = pd.read_csv(csv_path)
+    df = repair_ragged_csv(csv_path)
 
     metadata = load_metadata(csv_path)
     source_description = args.source_description or metadata.get("source_description")
