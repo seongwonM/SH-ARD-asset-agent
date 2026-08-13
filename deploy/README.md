@@ -14,9 +14,9 @@
 
 ## main과 실험 이미지의 차이
 
-`main` 빌드만 `k8s/pod.yaml`과 `k8s/robustness-job.yaml`의 이미지 태그를 빌드한
-SHA로 갱신해 다시 커밋한다. `exp/**` 빌드는 GHCR에 이미지를 발행하지만 운영 manifest를
-수정하지 않는다.
+`main` 빌드만 `k8s/pod.yaml`, `k8s/robustness-job.yaml`, `k8s/asset-run-job.yaml`의
+이미지 태그를 빌드한 SHA로 갱신해 다시 커밋한다. `exp/**` 빌드는 GHCR에 이미지를
+발행하지만 운영 manifest를 수정하지 않는다.
 
 실험 이미지를 내부 환경에서 직접 확인하려면 manifest를 커밋하지 말고 일회성으로
 이미지만 교체한다.
@@ -33,5 +33,5 @@ docker build -f deploy/Dockerfile \
   -t ghcr.io/seongwonm/sh-ard-asset-agent:local .
 
 docker run --rm ghcr.io/seongwonm/sh-ard-asset-agent:local \
-  python -c "from agent.compat import TableAssetContextBuilder; print('ok')"
+  python -c "from agent.runner import TableAssetContextRunner; print('ok')"
 ```
