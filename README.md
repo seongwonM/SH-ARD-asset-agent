@@ -221,9 +221,8 @@ make bench           # 실제 측정
 # 1. PVC (최초 1회)
 kubectl apply -f k8s/data-pvc.yaml
 
-# 2. 로컬 데이터를 PVC로 업로드 (data/internal/*.csv + *_metadata.json)
-#    -Target 기본값은 robustness_test이므로 asset-run-job용은 internal을 명시한다.
-./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal -Target internal
+# 2. 로컬 데이터를 PVC로 업로드 (data/robustness_test/*.csv + *_metadata.json)
+./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test
 
 # 3. 실행
 kubectl apply -f k8s/asset-run-job.yaml
@@ -235,7 +234,6 @@ kubectl logs -f job/sh-ard-asset-run
 
 결과 JSON은 기본값으로 `/data/results/<asset>.json`에 자산별로 저장된다.
 
-같은 순서로 `k8s/robustness-job.yaml`을 돌릴 땐 2번의 `-Target internal`을 빼면 된다
-(기본값이 `robustness_test`): `./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test`.
+`k8s/robustness-job.yaml`도 같은 `/data/robustness_test`를 읽으므로 2번은 그대로 재사용하면 된다.
 4번은 `-Target exp3_202608131000`처럼 실험 폴더를 지정해 그 실험 하나만
 (run.log + robustness_results.jsonl) 받을 수 있다.

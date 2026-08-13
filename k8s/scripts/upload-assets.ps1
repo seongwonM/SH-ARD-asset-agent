@@ -7,16 +7,16 @@
   없다. k8s/pod.yaml의 디버그 Pod(sleep infinity)가 없으면 띄우고, 그 Pod를
   경유해 kubectl cp로 파일을 넣는다.
 
-  asset-run-job.yaml은 <asset>.csv + <asset>_metadata.json(선택) 규칙을
-  ASSET_DATA_DIR(기본 /data/internal)에서 읽고,
-  robustness-job.yaml은 같은 규칙을 /data/robustness_test에서 읽는다.
+  asset-run-job.yaml과 robustness-job.yaml 둘 다 <asset>.csv +
+  <asset>_metadata.json(선택) 규칙을 /data/robustness_test에서 읽는다
+  (asset-run-job.yaml의 ASSET_DATA_DIR, robustness-job.yaml의 --data-dir).
 
 .PARAMETER LocalDir
   업로드할 로컬 디렉터리. <asset>.csv + <asset>_metadata.json(선택) 파일들.
 
 .PARAMETER Target
-  PVC 안의 대상 하위 디렉터리 이름.
-  robustness-job.yaml용은 "robustness_test"(기본), asset-run-job.yaml용은 "internal".
+  PVC 안의 대상 하위 디렉터리 이름. 기본 "robustness_test"가 두 Job이 공유하는
+  위치다. 별도 디렉터리를 쓰고 싶으면 이 값과 해당 yaml의 경로를 같이 바꾼다.
 
 .PARAMETER PodName
   파일을 경유해 넣을 디버그 Pod 이름. k8s/pod.yaml의 metadata.name과 맞춘다.
@@ -28,7 +28,6 @@
 
 .EXAMPLE
   ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test
-  ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal -Target internal
 #>
 param(
     [Parameter(Mandatory = $true)]

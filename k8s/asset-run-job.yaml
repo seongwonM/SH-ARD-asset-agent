@@ -3,8 +3,8 @@
 # 사용 순서
 #   1) PVC에 입력 CSV들을 <asset명>.csv + <asset명>_metadata.json(optional)
 #      규칙으로 같은 디렉터리에 업로드
-#      예: /data/internal/asset1.csv, /data/internal/asset1_metadata.json
-#          /data/internal/asset2.csv, /data/internal/asset2_metadata.json
+#      예: /data/robustness_test/asset1.csv, /data/robustness_test/asset1_metadata.json
+#          /data/robustness_test/asset2.csv, /data/robustness_test/asset2_metadata.json
 #   2) 아래 env의 ASSET_DATA_DIR / OUTPUT_DIR 조정
 #   3) kubectl apply -f k8s/asset-run-job.yaml
 #   4) kubectl logs -f job/sh-ard-asset-run
@@ -70,7 +70,7 @@ spec:
                 name: sh-ard-asset-agent-secret
           env:
             - name: ASSET_DATA_DIR
-              value: /data/internal
+              value: /data/robustness_test
             - name: OUTPUT_DIR
               value: /data/results
             - name: EXTRA_ARGS

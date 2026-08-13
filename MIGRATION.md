@@ -84,15 +84,14 @@ PYTHONPATH에 /app/src를 넣어줘.
 # 2. PVC (최초 1회)
 kubectl apply -f k8s/data-pvc.yaml
 
-# 3. 로컬 데이터를 PVC로 업로드
-./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal
-./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test -Target robustness_test
+# 3. 로컬 데이터를 PVC로 업로드 (asset-run-job.yaml/robustness-job.yaml 공용)
+./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test
 
 # 4-A. 대화형 디버그 Pod
 kubectl apply -f k8s/pod.yaml
 kubectl exec -it sh-ard-asset-agent -- /bin/bash
   $ make test                                    # mock으로 전 구간 검증
-  $ python examples/run_local.py /data/internal/x.csv my_asset
+  $ python examples/run_local.py /data/robustness_test/x.csv my_asset
 
 # 4-B. 장시간 강건성 배치 (Job)
 kubectl apply -f k8s/robustness-job.yaml
