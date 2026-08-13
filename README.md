@@ -206,20 +206,31 @@ make bench           # 실제 측정
 
 ## K8s에서 내부 데이터 실행
 
-내부 CSV 한 건을 로컬과 같은 경로로 돌리려면 [`asset-run-job.yaml`](/home/super/msw/SH-ARD-asset-agent/k8s/asset-run-job.yaml) 사용.
+내부 CSV 여러 건을 로컬과 같은 경로로 돌리려면 [`asset-run-job.yaml`](k8s/asset-run-job.yaml) 사용.
 
 전제:
-- `/data` PVC에 입력 CSV 업로드
-- `<csv_stem>_metadata.json`이 있으면 자동 로드
+- `/data` PVC에 `<asset>.csv` + `<asset>_metadata.json`(선택) 업로드
 - `sh-ard-asset-agent-secret`에 `LLM_API_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL` 존재
 
-순서:
+순서 (PowerShell):
 
-```bash
+```powershell
+# 0. Secret — .env의 LLM_* 값으로 생성/갱신 (최초 1회 + .env 바뀔 때마다)
+./k8s/scripts/create-secret-from-env.ps1
+
+# 1. PVC (최초 1회)
 kubectl apply -f k8s/data-pvc.yaml
-# PVC에 /data/internal/<asset>.csv 업로드
+
+# 2. 로컬 데이터를 PVC로 업로드 (data/internal/*.csv + *_metadata.json)
+./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal
+
+# 3. 실행
 kubectl apply -f k8s/asset-run-job.yaml
 kubectl logs -f job/sh-ard-asset-run
 ```
 
-결과 JSON은 기본값으로 `/data/results/<asset>.json`에 저장된다.
+결과 JSON은 기본값으로 `/data/results/<asset>.json`에 자산별로 저장된다.
+
+같은 순서로 `k8s/robustness-job.yaml`을 돌릴 땐 3번 대신
+`./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test -Target robustness_test`로
+업로드 위치만 바꾼다.

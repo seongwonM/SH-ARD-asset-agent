@@ -70,22 +70,31 @@ PYTHONPATH에 /app/src를 넣어줘.
 
 ## k8s 세팅 절차
 
-기존 절차를 그대로 따르되 두 군데가 늘었다.
+`k8s/scripts/create-secret-from-env.ps1`과 `run-robustness-test.ps1`은 "건드리지 마"
+라는 지시와 달리 실제로는 이 레포에 마이그레이션되지 않았었다(기존 레포에만 존재).
+`create-secret-from-env.ps1`은 이후 이 레포 기준으로 새로 작성해 채워 넣었고,
+`run-robustness-test.ps1`(exec 기반 배치 + `-FetchOnly`)은 그 역할을 `robustness-job.yaml`
+(Job)이 대신하므로 복원하지 않았다. 대신 로컬 데이터를 PVC에 넣는 `upload-assets.ps1`을
+새로 추가했다(기존 레포에는 없던 스크립트 — 그동안 수동 `kubectl cp`로 하던 것을 대체).
 
 ```powershell
-# 1. Secret (기존과 동일 — .env에서 읽는다)
+# 1. Secret — .env의 LLM_* 값으로 생성/갱신
 ./k8s/scripts/create-secret-from-env.ps1
 
 # 2. PVC (최초 1회)
 kubectl apply -f k8s/data-pvc.yaml
 
-# 3-A. 대화형 디버그 Pod
+# 3. 로컬 데이터를 PVC로 업로드
+./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal
+./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test -Target robustness_test
+
+# 4-A. 대화형 디버그 Pod
 kubectl apply -f k8s/pod.yaml
 kubectl exec -it sh-ard-asset-agent -- /bin/bash
   $ make test                                    # mock으로 전 구간 검증
-  $ python examples/run_from_csv.py /data/x.csv my_asset
+  $ python examples/run_local.py /data/internal/x.csv my_asset
 
-# 3-B. 장시간 강건성 배치 (신규 — Job)
+# 4-B. 장시간 강건성 배치 (Job)
 kubectl apply -f k8s/robustness-job.yaml
 kubectl logs -f job/sh-ard-robustness
 ```
