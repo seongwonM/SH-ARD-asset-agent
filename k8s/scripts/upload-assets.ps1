@@ -16,7 +16,7 @@
 
 .PARAMETER Target
   PVC 안의 대상 하위 디렉터리 이름.
-  asset-run-job.yaml용은 "internal"(기본), robustness-job.yaml용은 "robustness_test".
+  robustness-job.yaml용은 "robustness_test"(기본), asset-run-job.yaml용은 "internal".
 
 .PARAMETER PodName
   파일을 경유해 넣을 디버그 Pod 이름. k8s/pod.yaml의 metadata.name과 맞춘다.
@@ -27,14 +27,14 @@
   기본 네임스페이스를 쓴다.
 
 .EXAMPLE
-  ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal
-  ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test -Target robustness_test
+  ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test
+  ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal -Target internal
 #>
 param(
     [Parameter(Mandatory = $true)]
     [string]$LocalDir,
 
-    [string]$Target = "internal",
+    [string]$Target = "robustness_test",
 
     [string]$PodYaml = "k8s/pod.yaml",
 
