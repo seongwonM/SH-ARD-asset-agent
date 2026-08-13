@@ -1,21 +1,25 @@
-# 내부 CSV 1건을 같은 파이프라인으로 실행하는 Job.
+# 내부 CSV 여러 건을 같은 파이프라인으로 순회 실행하는 Job.
 #
 # 사용 순서
-#   1) PVC에 입력 CSV와 optional metadata JSON 업로드
-#      예: /data/internal/my_asset.csv
-#          /data/internal/my_asset_metadata.json
-#   2) 아래 env의 ASSET_CSV_PATH / ASSET_NAME / OUTPUT_PATH 조정
+#   1) PVC에 입력 CSV들을 <asset명>.csv + <asset명>_metadata.json(optional)
+#      규칙으로 같은 디렉터리에 업로드
+#      예: /data/internal/asset1.csv, /data/internal/asset1_metadata.json
+#          /data/internal/asset2.csv, /data/internal/asset2_metadata.json
+#   2) 아래 env의 ASSET_DATA_DIR / OUTPUT_DIR 조정
 #   3) kubectl apply -f k8s/asset-run-job.yaml
 #   4) kubectl logs -f job/sh-ard-asset-run
-#   5) 결과 확인: /data/results/<asset>.json
+#   5) 결과 확인: /data/results/<asset>.json (csv 하나당 하나씩)
 #
-# 이 Job은 examples/run_local.py를 그대로 사용한다.
-# 즉, 로컬 online smoke test와 같은 경로를 k8s에서도 밟는다.
+# 이 Job은 examples/run_local.py를 CSV마다 한 번씩 호출한다.
+# 즉, 로컬 online smoke test와 같은 경로를 k8s에서도 밟되, 디렉터리 안의
+# 모든 자산을 순회한다. run_local.py가 <csv_stem>_metadata.json을 자동으로
+# 찾으므로 metadata 파일은 이름만 맞으면 별도 지정이 필요 없다.
 #
 # 주의
 # - LLM_API_ENDPOINT / LLM_API_KEY / LLM_MODEL은 secret에서 주입돼야 한다.
 # - metadata 파일은 <csv_stem>_metadata.json 이름 규칙을 따른다.
 # - 현재 기본 structured mode는 json_schema 기준이다.
+# - csv 하나가 실패해도(run_local.py 비정상 종료) 나머지 자산은 계속 처리된다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -38,21 +42,35 @@ spec:
             - /bin/bash
             - -lc
             - |
-              python examples/run_local.py \
-                "${ASSET_CSV_PATH}" \
-                "${ASSET_NAME}" \
-                --output "${OUTPUT_PATH}" \
-                ${EXTRA_ARGS}
+              shopt -s nullglob
+              total=0
+              failed=0
+              for csv in "${ASSET_DATA_DIR}"/*.csv; do
+                name=$(basename "${csv}" .csv)
+                total=$((total + 1))
+                echo "===== [${total}] ${name} ====="
+                python examples/run_local.py \
+                  "${csv}" \
+                  "${name}" \
+                  --output "${OUTPUT_DIR}/${name}.json" \
+                  ${EXTRA_ARGS} || failed=$((failed + 1))
+              done
+              echo "완료: ${total}건 중 ${failed}건 실패"
+              if [ "${total}" -eq 0 ]; then
+                echo "${ASSET_DATA_DIR}에 csv가 없습니다" >&2
+                exit 1
+              fi
+              if [ "${failed}" -gt 0 ]; then
+                exit 1
+              fi
           envFrom:
             - secretRef:
                 name: sh-ard-asset-agent-secret
           env:
-            - name: ASSET_CSV_PATH
-              value: /data/internal/process_log.csv
-            - name: ASSET_NAME
-              value: process_log
-            - name: OUTPUT_PATH
-              value: /data/results/process_log.json
+            - name: ASSET_DATA_DIR
+              value: /data/internal
+            - name: OUTPUT_DIR
+              value: /data/results
             - name: EXTRA_ARGS
               value: --quiet
             - name: LLM_STRUCTURED_MODE
