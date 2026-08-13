@@ -32,29 +32,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT))  # bench 패키지 접근용
 
+from agent.config import load_dotenv_file as load_dotenv  # noqa: E402
 from agent.llm import RuntimeDeps  # noqa: E402
 from agent.runner import TableAssetContextRunner  # noqa: E402
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# 환경 준비
-# ---------------------------------------------------------------------------
-
-
-def load_dotenv(path: str = ".env") -> None:
-    """값 뒤 인라인 주석까지 처리하는 최소 파서. 이미 설정된 환경변수는 덮지 않는다."""
-    p = Path(path)
-    if not p.exists():
-        return
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        value = value.split(" #")[0].strip().strip("'\"")
-        os.environ.setdefault(key.strip(), value)
 
 
 def build_deps(offline: bool = False, model: str | None = None) -> RuntimeDeps:

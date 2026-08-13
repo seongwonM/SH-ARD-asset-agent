@@ -14,9 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from agent.config import get_models, get_reps, load_dotenv_file  # noqa: E402
+from agent.exp_logging import log_end, log_start, new_exp_dir, setup_logging  # noqa: E402
+from agent.llm import (  # noqa: E402
+    MAX_CONCURRENCY,
+    MAX_HTTP_RETRIES,
+    REQUESTS_PER_MINUTE,
+    STRUCTURED_MODE,
+)
 from agent.runner import TableAssetContextRunner  # noqa: E402
 from bench.scoring import score_against_truth, score_process  # noqa: E402
-from examples.run_local import build_column_descriptions, load_dotenv  # noqa: E402
+from examples.run_local import build_column_descriptions  # noqa: E402
 
 
 def discover(data_dir: Path) -> List[Dict[str, Any]]:
@@ -35,22 +43,6 @@ def discover(data_dir: Path) -> List[Dict[str, Any]]:
     return out
 
 
-def load_done(path: Path) -> set:
-    if not path.exists():
-        return set()
-    done = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-            done.add((row["dataset"], row["with_column_descriptions"], row["model"], row["rep"]))
-        except Exception:  # noqa: BLE001
-            continue
-    return done
-
-
 def build_deps(model: str):
     from openai import OpenAI
 
@@ -64,26 +56,44 @@ def build_deps(model: str):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data/mock")
-    ap.add_argument("--output", default="results/robustness_results.jsonl")
-    ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--results-dir", default="results")
+    ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--models", nargs="*", default=None)
     ap.add_argument("--only", nargs="*")
     args = ap.parse_args()
 
-    load_dotenv()
+    load_dotenv_file()
 
     data_dir = Path(args.data_dir)
     datasets = [d for d in discover(data_dir) if not args.only or d["name"] in args.only]
     if not datasets:
         raise SystemExit(f"no datasets found in {data_dir}")
 
-    models = args.models or [os.environ.get("LLM_MODEL")]
-    if not models[0]:
-        raise SystemExit("--models or LLM_MODEL is required")
+    models = args.models or get_models()
+    reps = args.reps or get_reps()
 
-    out_path = Path(args.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    done = load_done(out_path)
+    exp_dir = new_exp_dir(Path(args.results_dir))
+    logger = setup_logging(exp_dir)
+    out_path = exp_dir / "robustness_results.jsonl"
+
+    log_start(
+        logger,
+        {
+            "data_dir": str(data_dir),
+            "datasets": [d["name"] for d in datasets],
+            "models": models,
+            "reps": reps,
+            "requests_per_minute": REQUESTS_PER_MINUTE,
+            "max_concurrency": MAX_CONCURRENCY,
+            "max_http_retries": MAX_HTTP_RETRIES,
+            "structured_mode": STRUCTURED_MODE,
+            "results_dir": str(exp_dir),
+        },
+    )
+
+    total_runs = 0
+    total_errors = 0
+    batch_started = time.time()
 
     for model in models:
         deps = build_deps(model)
@@ -95,11 +105,7 @@ def main() -> None:
             full_desc = build_column_descriptions(ds["metadata"])
 
             for with_desc in (True, False):
-                for rep in range(1, args.reps + 1):
-                    key = (ds["name"], with_desc, model, rep)
-                    if key in done:
-                        continue
-
+                for rep in range(1, reps + 1):
                     started = time.time()
                     error = None
                     result = None
@@ -131,11 +137,23 @@ def main() -> None:
                     with out_path.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-                    print(
-                        f"{ds['name']} desc={with_desc} model={model} rep={rep} "
-                        f"error={error or '-'} wall={entry['wall_seconds']}s",
-                        flush=True,
+                    total_runs += 1
+                    if error:
+                        total_errors += 1
+                    logger.info(
+                        "run dataset=%s desc=%s model=%s rep=%d error=%s wall=%ss",
+                        ds["name"], with_desc, model, rep, error or "-", entry["wall_seconds"],
                     )
+
+    log_end(
+        logger,
+        {
+            "total_runs": total_runs,
+            "errors": total_errors,
+            "wall_seconds": round(time.time() - batch_started, 1),
+            "results_dir": str(exp_dir),
+        },
+    )
 
 
 if __name__ == "__main__":

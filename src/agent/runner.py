@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -8,6 +9,8 @@ from typing import Any, Dict, List
 from .contract import SkillDeps, Slot
 from .graph import build_agent
 from .state import load_board, new_state
+
+logger = logging.getLogger(__name__)
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
@@ -108,6 +111,11 @@ def _to_result(
     )
     issues = _collect_issues(final, verification)
     performance = _build_performance(final, deps, started)
+    logger.info(
+        "run_done asset=%s elapsed=%.1fs llm_calls=%d qps=%.3f tps=%.1f",
+        asset_name, performance["elapsed_seconds"], performance["llm_call_count"],
+        performance["qps"], performance["tps"],
+    )
 
     asset_context = {
         "topic": ctx.get("topic", ""),
