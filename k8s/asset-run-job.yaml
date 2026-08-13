@@ -38,7 +38,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: asset-run
-          image: ghcr.io/seongwonm/sh-ard-asset-agent:f5006e6045eee4e812b6873a9c0d33255cf305fd
+          image: ghcr.io/seongwonm/sh-ard-asset-agent:4946d21f0997ecdf50fa7fa2ba2856fd44d07ae6
           imagePullPolicy: Always
           command:
             - /bin/bash
