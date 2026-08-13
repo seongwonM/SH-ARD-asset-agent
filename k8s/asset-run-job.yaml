@@ -20,6 +20,8 @@
 # - metadata 파일은 <csv_stem>_metadata.json 이름 규칙을 따른다.
 # - 현재 기본 structured mode는 json_schema 기준이다.
 # - csv 하나가 실패해도(run_local.py 비정상 종료) 나머지 자산은 계속 처리된다.
+# - 이미지 태그는 .github/workflows/build-push.yml이 커밋 SHA로 자동 갱신한다.
+#   수동으로 건드리지 말 것(pod.yaml/robustness-job.yaml과 동일).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -36,7 +38,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: asset-run
-          image: ghcr.io/seongwonm/sh-ard-asset-agent:latest
+          image: ghcr.io/seongwonm/sh-ard-asset-agent:b37e3585f7984b787b10d0cfe9ae4fe2347cbb69
           imagePullPolicy: Always
           command:
             - /bin/bash
