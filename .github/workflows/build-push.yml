@@ -82,9 +82,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 실험 이미지는 GHCR에만 발행한다. 운영 manifest는 main 이미지로만 갱신한다.
-      - name: Update main image SHA in k8s manifests
-        if: github.ref == 'refs/heads/main'
+      # main이든 exp/**든, 방금 push된 그 브랜치의 manifest를 그 브랜치 자신의
+      # 이미지로 갱신한다. 그래야 exp 브랜치에서 kubectl apply -f k8s/*.yaml을
+      # 그대로 써도 그 브랜치의 최신 코드가 담긴 이미지가 돈다.
+      - name: Update image SHA in k8s manifests
         run: |
           sed -i "s|image: ${{ env.IMAGE }}:.*|image: ${{ env.IMAGE }}:${{ github.sha }}|" \
             k8s/pod.yaml k8s/robustness-job.yaml k8s/asset-run-job.yaml
@@ -99,8 +100,8 @@ jobs:
           git commit -m "ci: update image tag to ${{ github.sha }}"
 
           for attempt in 1 2 3 4 5; do
-            git pull --rebase origin main
-            if git push origin HEAD:main; then
+            git pull --rebase origin "${{ github.ref_name }}"
+            if git push origin "HEAD:${{ github.ref_name }}"; then
               exit 0
             fi
             sleep $((attempt * 3))
