@@ -24,6 +24,7 @@ skill 하나가 실패해도 배치의 나머지와 이후 루프는 계속된�
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -32,6 +33,8 @@ from .guards import GuardContext, run_guards
 from .probes import run_probes
 from .registry import SkillRegistry
 from .state import AgentState, Board, load_board, load_facts
+
+logger = logging.getLogger(__name__)
 
 
 async def execute_batch(
@@ -92,6 +95,12 @@ async def execute_batch(
         elif r["key"] not in blocked:
             blocked.append(r["key"])
 
+    elapsed_ms = int((time.time() - started) * 1000)
+    logger.info(
+        "batch_done iteration=%d tasks=%d llm_calls=%d probe_runs=%d elapsed_ms=%d",
+        iteration, len(tasks), llm_calls, probe_runs, elapsed_ms,
+    )
+
     return {
         "board": board.model_dump(),
         "iteration": iteration,
@@ -102,7 +111,7 @@ async def execute_batch(
                    "probe_runs": (state.get("budget") or {}).get("probe_runs", 0) + probe_runs},
         "history": history,
         "batch": [],
-        "elapsed_ms": int((time.time() - started) * 1000),
+        "elapsed_ms": elapsed_ms,
     }
 
 
@@ -188,6 +197,10 @@ async def _run_one(
             ctx.repair_hints = [f"{v.message} → {v.hint}" for v in violations[:3]]
             continue
 
+        logger.info(
+            "skill_ok skill=%s target=%s iteration=%d attempts=%d",
+            skill_name, target, iteration, attempt,
+        )
         return {
             "result": result,
             "key": key,
@@ -247,6 +260,10 @@ def _fail(key, skill, target, iteration, reason, llm_calls, probe_runs) -> Dict[
     여기서 루프를 죽이지 않는 것이 중요하다. 컬럼 하나의 해석 실패로
     테이블 전체 컨텍스트 생성이 중단되면 배치 처리가 불가능하다.
     """
+    logger.warning(
+        "skill_fail skill=%s target=%s iteration=%d reason=%s",
+        skill, target, iteration, reason,
+    )
     return {
         "result": None,
         "key": key,

@@ -9,22 +9,22 @@
 #   기존 스크립트도 계속 쓸 수 있다(-FetchOnly로 중간 결과만 받는 용도).
 #   이 Job은 그 대안이지 대체가 아니다.
 #
-# 이어달리기
-#   결과는 PVC의 /data/robustness_results.jsonl에 한 줄씩 append되고,
-#   run_robustness_test.py가 (dataset, with_column_descriptions, model, rep)
-#   조합을 보고 이미 끝난 것은 건너뛴다. 따라서 Job이 죽어도 다시 apply하면
-#   남은 조합부터 이어서 돈다. backoffLimit을 2로 둔 이유가 이것이다.
+# exp 폴더
+#   실행마다 PVC의 /data/results/exp{N}_{KST 타임스탬프}/ 가 새로 생기고,
+#   그 안에 run.log(시작 메타데이터 + 호출/에이전트 흐름별 로그 + 종료 요약)와
+#   robustness_results.jsonl이 같이 들어간다. 재시도도 이어달리기가 아니라
+#   새 exp 폴더로 처음부터 다시 돈다 (backoffLimit을 0으로 둔 이유).
 #
 #   실행:  kubectl apply -f k8s/robustness-job.yaml
 #   로그:  kubectl logs -f job/sh-ard-robustness
-#   결과:  kubectl cp <pod>:/data/robustness_results.jsonl ./results/
+#   결과:  kubectl cp <pod>:/data/results/exp{N}_.../ ./results/exp{N}_.../
 #   재실행: kubectl delete job sh-ard-robustness && kubectl apply -f k8s/robustness-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: sh-ard-robustness
 spec:
-  backoffLimit: 2
+  backoffLimit: 0
   # 완료 후에도 로그와 상태를 볼 수 있게 하루 유지
   ttlSecondsAfterFinished: 86400
   template:
@@ -42,8 +42,7 @@ spec:
             - python
             - examples/run_robustness_test.py
             - --data-dir=/data/robustness_test
-            - --output=/data/robustness_results.jsonl
-            - --reps=20
+            - --results-dir=/data/results
           envFrom:
             - secretRef:
                 name: sh-ard-asset-agent-secret
@@ -52,6 +51,8 @@ spec:
               value: "guided_json"
             - name: AGENT_MAX_BATCH
               value: "8"
+            - name: ROBUSTNESS_REPS
+              value: "20"
             - name: PYTHONPATH
               value: "/app:/app/src"
           volumeMounts:

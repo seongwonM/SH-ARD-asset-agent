@@ -1,9 +1,7 @@
 # 데이터셋/결과 보관용 PVC. Pod와 Job이 모두 /data로 마운트한다.
 #
 # 기존 레포(SH-ARD-asset-agent)의 동명 PVC를 그대로 쓴다. 이름을 바꾸면
-# 이미 주입해둔 robustness_test 데이터셋과 누적된 결과 JSONL을 잃는다.
-# 재실행 시 이어달리기(run_robustness_test.py의 completed key 검사)가
-# 이 파일들에 의존하므로, 이름 변경은 곧 처음부터 다시 도는 것을 뜻한다.
+# 이미 주입해둔 robustness_test 데이터셋과 exp별로 쌓인 결과/로그 폴더를 잃는다.
 #
 # 최초 1회: kubectl apply -f k8s/data-pvc.yaml
 # storageClassName은 클러스터 기본값을 쓰도록 비워뒀다.

@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
 import random
 import time
@@ -38,6 +39,8 @@ from typing import Any, Dict, List, Type
 from pydantic import BaseModel, ValidationError
 
 from .contract import SkillDeps
+
+logger = logging.getLogger(__name__)
 
 # --- 환경변수 --------------------------------------------------------------
 STRUCTURED_MODE = os.getenv("LLM_STRUCTURED_MODE", "prompt")
@@ -291,21 +294,40 @@ class RuntimeDeps(SkillDeps):
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 self._stats["http_retries"] += 1
+                logger.warning(
+                    "llm_call_retry model=%s attempt=%d/%d error=%s: %s",
+                    self._model, attempt + 1, MAX_HTTP_RETRIES, type(exc).__name__, exc,
+                )
                 if attempt == MAX_HTTP_RETRIES - 1:
                     break
                 # 429/5xx는 지수 백오프. 지터를 넣어 배치가 동시에 재시도하지 않게 한다.
                 await asyncio.sleep((2**attempt) * 0.5 + random.random() * 0.3)
                 continue
 
+            latency = time.time() - started
             self._stats["llm_call_count"] += 1
-            self._stats["llm_total_latency"] += time.time() - started
+            self._stats["llm_total_latency"] += latency
             usage = getattr(resp, "usage", None)
+            prompt_tokens = completion_tokens = total_tokens = 0
             if usage is not None:
-                self._stats["llm_prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
-                self._stats["llm_completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
-                self._stats["llm_total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                self._stats["llm_prompt_tokens"] += prompt_tokens
+                self._stats["llm_completion_tokens"] += completion_tokens
+                self._stats["llm_total_tokens"] += total_tokens
+            logger.info(
+                "llm_call model=%s attempt=%d latency_ms=%.0f prompt_tokens=%d "
+                "completion_tokens=%d total_tokens=%d",
+                self._model, attempt + 1, latency * 1000,
+                prompt_tokens, completion_tokens, total_tokens,
+            )
             return resp.choices[0].message.content or ""
 
+        logger.error(
+            "llm_call_failed model=%s retries=%d error=%s: %s",
+            self._model, MAX_HTTP_RETRIES, type(last_exc).__name__, last_exc,
+        )
         raise LLMError(f"LLM 호출 실패({MAX_HTTP_RETRIES}회 재시도): {type(last_exc).__name__}: {last_exc}")
 
     async def structured(self, messages, model_cls: Type[BaseModel], stage: str):

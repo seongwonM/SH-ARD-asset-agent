@@ -39,10 +39,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from agent.config import load_dotenv_file as load_dotenv  # noqa: E402
 from agent.csv_repair import repair_ragged_csv  # noqa: E402
 from agent.runner import TableAssetContextRunner  # noqa: E402
 from bench.scoring import consistency, score_against_truth, score_process  # noqa: E402
-from examples.run_local import build_column_descriptions, load_dotenv  # noqa: E402
+from examples.run_local import build_column_descriptions  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
