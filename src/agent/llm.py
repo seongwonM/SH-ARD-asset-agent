@@ -286,6 +286,7 @@ class RuntimeDeps(SkillDeps):
         for attempt in range(MAX_HTTP_RETRIES):
             await self._throttle.acquire()
             started = time.time()
+            logger.info("llm_call_dispatch model=%s attempt=%d", self._model, attempt + 1)
             try:
                 if asyncio.iscoroutinefunction(create):
                     resp = await create(**kwargs)
@@ -332,6 +333,7 @@ class RuntimeDeps(SkillDeps):
 
     async def structured(self, messages, model_cls: Type[BaseModel], stage: str):
         payload = self._payload(messages, model_cls, stage)
+        logger.info("llm_call_queued stage=%s model=%s", stage, self._model)
         async with self._sem:
             raw = await self._post(payload)
         try:

@@ -49,6 +49,11 @@ async def execute_batch(
     iteration = state.get("iteration", 0) + 1
     started = time.time()
 
+    logger.info(
+        "batch_start iteration=%d tasks=%s",
+        iteration, [f"{skill}::{target}" for skill, target in tasks],
+    )
+
     guard_ctx = GuardContext(
         language=state.get("language", "ko"),
         column_names=[f.name for f in facts],
@@ -151,6 +156,10 @@ async def _run_one(
     trail: List[str] = []
 
     for attempt in range(1, manifest.max_attempts + 1):
+        logger.info(
+            "skill_start skill=%s target=%s iteration=%d attempt=%d/%d",
+            skill_name, target, iteration, attempt, manifest.max_attempts,
+        )
         try:
             result: SkillResult = await skill.handler(ctx, deps)
             llm_calls += 1

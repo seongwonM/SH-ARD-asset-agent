@@ -30,7 +30,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT))  # bench 패키지 접근용
 
-from agent.config import load_dotenv_file as load_dotenv  # noqa: E402
+from agent.config import get_models, load_dotenv_file as load_dotenv  # noqa: E402
 from agent.csv_repair import repair_ragged_csv  # noqa: E402
 from agent.llm import RuntimeDeps  # noqa: E402
 from agent.runner import TableAssetContextRunner  # noqa: E402
@@ -126,7 +126,9 @@ def main() -> None:
     source_description = args.source_description or metadata.get("source_description")
     column_descriptions = None if args.no_column_descriptions else build_column_descriptions(metadata)
 
-    deps = build_deps(offline=args.offline, model=args.model)
+    resolved_model = args.model or get_models()[0]
+    logger.info("asset_name=%r csv=%s model=%s", asset_name, csv_path, resolved_model)
+    deps = build_deps(offline=args.offline, model=resolved_model)
     builder = TableAssetContextRunner(deps=deps)
     result = builder.build(
         tabular_data=df,

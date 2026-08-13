@@ -24,6 +24,7 @@ act는 배치를 받아 동시 실행한다. 컬럼 200개도 iteration 200번�
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
@@ -34,6 +35,8 @@ from .executor import execute_batch
 from .planner import MAX_BATCH, decide
 from .registry import SkillRegistry
 from .state import AgentState
+
+logger = logging.getLogger(__name__)
 
 
 def build_agent(
@@ -48,6 +51,11 @@ def build_agent(
 
     def plan_node(state: AgentState) -> Dict[str, Any]:
         d = decide(state, registry, batch_limit)
+        logger.info(
+            "plan_done iteration=%d done=%s stop_reason=%s batch=%s note=%s",
+            state.get("iteration", 0), d.done, d.stop_reason,
+            [f"{c.skill}::{c.target}" for c in d.batch], d.note,
+        )
         return {
             "batch": [{"skill": c.skill, "target": c.target} for c in d.batch],
             "plan_note": d.note,

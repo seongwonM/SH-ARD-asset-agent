@@ -17,6 +17,9 @@
 #
 # 주의
 # - LLM_API_ENDPOINT / LLM_API_KEY / LLM_MODEL은 secret에서 주입돼야 한다.
+# - 모델 선택: --model CLI 인자가 없으면 LLM_MODEL1 > LLM_MODEL2 > LLM_MODEL3 > LLM_MODEL
+#   순으로 처음 설정된 값 하나를 이 Job 전체(모든 csv)에 씀 - robustness-job.yaml처럼
+#   모델별로 반복 실행하는 게 아니라 자산 하나당 한 번만 돌리는 구조라서다.
 # - metadata 파일은 <csv_stem>_metadata.json 이름 규칙을 따른다.
 # - 현재 기본 structured mode는 json_schema 기준이다.
 # - csv 하나가 실패해도(run_local.py 비정상 종료) 나머지 자산은 계속 처리된다.
@@ -74,7 +77,7 @@ spec:
             - name: OUTPUT_DIR
               value: /data/results
             - name: EXTRA_ARGS
-              value: --quiet
+              value: ""
             - name: LLM_STRUCTURED_MODE
               value: json_schema
             - name: AGENT_MAX_BATCH

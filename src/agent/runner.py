@@ -39,6 +39,11 @@ class TableAssetContextRunner:
         column_descriptions: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         started = time.time()
+        logger.info(
+            "run_start asset=%s rows=%d columns=%d max_iterations=%d max_llm_calls=%d",
+            asset_name, len(tabular_data), len(tabular_data.columns),
+            self.max_iterations, self.max_llm_calls,
+        )
         ref = f"runtime://{asset_name}"
         register = getattr(self.deps, "register_frame", None)
         if register is not None:
