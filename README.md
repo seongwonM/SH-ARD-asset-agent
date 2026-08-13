@@ -227,10 +227,14 @@ kubectl apply -f k8s/data-pvc.yaml
 # 3. 실행
 kubectl apply -f k8s/asset-run-job.yaml
 kubectl logs -f job/sh-ard-asset-run
+
+# 4. 결과를 로컬로 회수
+./k8s/scripts/download-results.ps1 -LocalDir .\results
 ```
 
 결과 JSON은 기본값으로 `/data/results/<asset>.json`에 자산별로 저장된다.
 
-같은 순서로 `k8s/robustness-job.yaml`을 돌릴 땐 3번 대신
+같은 순서로 `k8s/robustness-job.yaml`을 돌릴 땐 2번 대신
 `./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test -Target robustness_test`로
-업로드 위치만 바꾼다.
+업로드 위치를 바꾸고, 4번은 `-Target exp3_202608131000`처럼 실험 폴더를 지정해
+그 실험 하나만(run.log + robustness_results.jsonl) 받을 수 있다.
