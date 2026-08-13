@@ -17,33 +17,31 @@
 .PARAMETER SecretName
   생성/갱신할 Secret 이름.
 
+.PARAMETER Namespace
+  대상 네임스페이스. 생략하면 환경변수 K8S_NAMESPACE, 그다음 .env의
+  K8S_NAMESPACE를 차례로 본다. 아무 것도 없으면 kubectl 현재 컨텍스트의
+  기본 네임스페이스를 쓴다. 지정된 네임스페이스가 없으면 먼저 만든다.
+
 .EXAMPLE
   ./k8s/scripts/create-secret-from-env.ps1
   ./k8s/scripts/create-secret-from-env.ps1 -EnvFile .env.prod -SecretName sh-ard-asset-agent-secret
 #>
 param(
     [string]$EnvFile = ".env",
-    [string]$SecretName = "sh-ard-asset-agent-secret"
+    [string]$SecretName = "sh-ard-asset-agent-secret",
+    [string]$Namespace = ""
 )
 
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot/_common.ps1"
 
 if (-not (Test-Path $EnvFile)) {
     throw "$EnvFile 가 없습니다. LLM_API_ENDPOINT / LLM_API_KEY / LLM_MODEL 등을 담은 .env를 먼저 준비하세요 (.env.example 참고)."
 }
 
-# .env 파싱 규칙은 src/agent/config.py의 load_dotenv_file()과 동일하게 맞춘다:
-# 인라인 주석(" #" 이후) 제거, 앞뒤 따옴표 제거.
-$envVars = @{}
-Get-Content $EnvFile | ForEach-Object {
-    $line = $_.Trim()
-    if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) { return }
-    $parts = $line.Split("=", 2)
-    $key = $parts[0].Trim()
-    $value = ($parts[1] -split ' #')[0].Trim()
-    $value = $value.Trim([char[]]@("'", '"'))
-    $envVars[$key] = $value
-}
+$envVars = Read-DotEnv $EnvFile
+$Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
+$nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
 
 # Secret에 올릴 키 화이트리스트. 새 키를 추가할 땐 여기와 k8s/*.yaml의
 # envFrom 사용처를 같이 확인할 것.
@@ -72,9 +70,14 @@ if ($literalArgs.Count -eq 0) {
     throw "$EnvFile 에서 LLM_* 값을 찾지 못했습니다."
 }
 
-Write-Host "Secret '$SecretName' 생성/갱신 ($($literalArgs.Count)개 키)..."
+if ($Namespace) {
+    Write-Host "네임스페이스 '$Namespace' 확인/생성..."
+    Confirm-K8sNamespace -Namespace $Namespace
+}
+
+Write-Host "Secret '$SecretName' 생성/갱신 ($($literalArgs.Count)개 키, namespace=$(if ($Namespace) { $Namespace } else { '<default>' }))..."
 # create --dry-run + apply 조합으로 이미 있으면 갱신, 없으면 새로 만든다(멱등).
-kubectl create secret generic $SecretName @literalArgs --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic $SecretName @literalArgs @nsArgs --dry-run=client -o yaml | kubectl apply @nsArgs -f -
 
 Write-Host "완료. 키 목록만 확인하려면:"
-Write-Host "  kubectl get secret $SecretName -o jsonpath='{.data}' | ConvertFrom-Json | Get-Member -MemberType NoteProperty"
+Write-Host "  kubectl get secret $SecretName $($nsArgs -join ' ') -o jsonpath='{.data}' | ConvertFrom-Json | Get-Member -MemberType NoteProperty"

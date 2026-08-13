@@ -19,6 +19,11 @@
 .PARAMETER PodName
   경유할 디버그 Pod 이름. k8s/pod.yaml의 metadata.name과 맞춘다.
 
+.PARAMETER Namespace
+  대상 네임스페이스. 생략하면 환경변수 K8S_NAMESPACE, 그다음 .env의
+  K8S_NAMESPACE를 차례로 본다. 아무 것도 없으면 kubectl 현재 컨텍스트의
+  기본 네임스페이스를 쓴다.
+
 .EXAMPLE
   ./k8s/scripts/download-results.ps1 -LocalDir .\results
   ./k8s/scripts/download-results.ps1 -LocalDir .\results -Target exp3_202608131000
@@ -31,22 +36,29 @@ param(
 
     [string]$PodYaml = "k8s/pod.yaml",
 
-    [string]$PodName = "sh-ard-asset-agent"
+    [string]$PodName = "sh-ard-asset-agent",
+
+    [string]$Namespace = ""
 )
 
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot/_common.ps1"
 
-$podPhase = kubectl get pod $PodName -o jsonpath="{.status.phase}" 2>$null
+$envVars = Read-DotEnv ".env"
+$Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
+$nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
+
+$podPhase = kubectl get pod $PodName @nsArgs -o jsonpath="{.status.phase}" 2>$null
 if (-not $podPhase) {
     Write-Host "디버그 Pod($PodName) 생성..."
-    kubectl apply -f $PodYaml | Out-Null
+    kubectl apply @nsArgs -f $PodYaml | Out-Null
 }
 Write-Host "Pod Ready 대기..."
-kubectl wait --for=condition=Ready "pod/$PodName" --timeout=120s
+kubectl wait @nsArgs --for=condition=Ready "pod/$PodName" --timeout=120s
 
 $remotePath = if ($Target) { "/data/results/$Target" } else { "/data/results" }
 
-$exists = kubectl exec $PodName -- sh -c "[ -e '$remotePath' ] && echo yes || echo no"
+$exists = kubectl exec @nsArgs $PodName -- sh -c "[ -e '$remotePath' ] && echo yes || echo no"
 if ($exists.Trim() -ne "yes") {
     throw "$remotePath 가 PVC에 없습니다. -Target 값을 확인하세요."
 }
@@ -54,7 +66,7 @@ if ($exists.Trim() -ne "yes") {
 New-Item -ItemType Directory -Force -Path $LocalDir | Out-Null
 
 Write-Host "다운로드: ${PodName}:${remotePath} -> $LocalDir"
-kubectl cp "${PodName}:${remotePath}" $LocalDir
+kubectl cp @nsArgs "${PodName}:${remotePath}" $LocalDir
 
 Write-Host "`n완료. 받은 내용:"
 Get-ChildItem -Recurse $LocalDir | ForEach-Object { Write-Host "  $($_.FullName)" }

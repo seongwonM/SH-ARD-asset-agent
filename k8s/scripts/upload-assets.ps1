@@ -21,6 +21,11 @@
 .PARAMETER PodName
   파일을 경유해 넣을 디버그 Pod 이름. k8s/pod.yaml의 metadata.name과 맞춘다.
 
+.PARAMETER Namespace
+  대상 네임스페이스. 생략하면 환경변수 K8S_NAMESPACE, 그다음 .env의
+  K8S_NAMESPACE를 차례로 본다. 아무 것도 없으면 kubectl 현재 컨텍스트의
+  기본 네임스페이스를 쓴다.
+
 .EXAMPLE
   ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\internal
   ./k8s/scripts/upload-assets.ps1 -LocalDir .\data\robustness_test -Target robustness_test
@@ -33,10 +38,17 @@ param(
 
     [string]$PodYaml = "k8s/pod.yaml",
 
-    [string]$PodName = "sh-ard-asset-agent"
+    [string]$PodName = "sh-ard-asset-agent",
+
+    [string]$Namespace = ""
 )
 
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot/_common.ps1"
+
+$envVars = Read-DotEnv ".env"
+$Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
+$nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
 
 if (-not (Test-Path $LocalDir)) {
     throw "$LocalDir 가 없습니다."
@@ -47,27 +59,32 @@ if ($files.Count -eq 0) {
     throw "$LocalDir 에 csv/metadata.json/truth.json 파일이 없습니다."
 }
 
-Write-Host "PVC 확인/생성..."
-kubectl apply -f k8s/data-pvc.yaml | Out-Null
+if ($Namespace) {
+    Write-Host "네임스페이스 '$Namespace' 확인/생성..."
+    Confirm-K8sNamespace -Namespace $Namespace
+}
 
-$podPhase = kubectl get pod $PodName -o jsonpath="{.status.phase}" 2>$null
+Write-Host "PVC 확인/생성..."
+kubectl apply @nsArgs -f k8s/data-pvc.yaml | Out-Null
+
+$podPhase = kubectl get pod $PodName @nsArgs -o jsonpath="{.status.phase}" 2>$null
 if (-not $podPhase) {
     Write-Host "디버그 Pod($PodName) 생성..."
-    kubectl apply -f $PodYaml | Out-Null
+    kubectl apply @nsArgs -f $PodYaml | Out-Null
 }
 Write-Host "Pod Ready 대기..."
-kubectl wait --for=condition=Ready "pod/$PodName" --timeout=120s
+kubectl wait @nsArgs --for=condition=Ready "pod/$PodName" --timeout=120s
 
 $remoteDir = "/data/$Target"
-kubectl exec $PodName -- mkdir -p $remoteDir
+kubectl exec @nsArgs $PodName -- mkdir -p $remoteDir
 
 $total = $files.Count
 $i = 0
 foreach ($f in $files) {
     $i++
     Write-Host "[$i/$total] $($f.Name) -> ${PodName}:${remoteDir}/$($f.Name)"
-    kubectl cp $f.FullName "${PodName}:${remoteDir}/$($f.Name)"
+    kubectl cp @nsArgs $f.FullName "${PodName}:${remoteDir}/$($f.Name)"
 }
 
 Write-Host "`n업로드 완료 ($total 개). 확인:"
-kubectl exec $PodName -- ls -la $remoteDir
+kubectl exec @nsArgs $PodName -- ls -la $remoteDir
