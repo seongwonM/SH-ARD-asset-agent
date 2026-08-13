@@ -10,6 +10,10 @@ structured output 옵션은 **틀려도 에러가 나지 않는다.** 지원하�
     python bench/check_endpoint.py
     python bench/check_endpoint.py --model Qwen/Qwen2.5-32B-Instruct
 
+`.env` 파일이 있으면 자동으로 읽는다(다른 스크립트와 동일한 파서, LLM_API_ENDPOINT
+/ LLM_API_KEY / LLM_MODEL을 export 없이 바로 씀). --endpoint/--api-key/--model
+CLI 인자가 있으면 그게 우선한다.
+
 검사 항목
   1. /v1/models 로 서빙 중인 모델 확인
   2. 세 가지 모드(guided_json / json_schema / prompt)를 각각 시도
@@ -33,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from agent.config import load_dotenv_file  # noqa: E402
 from agent.llm import RuntimeDeps  # noqa: E402
 
 MODES = ["guided_json", "json_schema", "prompt"]
@@ -95,6 +100,8 @@ async def main_async(args) -> int:
     except ImportError:
         print("openai 패키지가 필요합니다: pip install openai")
         return 2
+
+    load_dotenv_file()
 
     endpoint = args.endpoint or os.environ.get("LLM_API_ENDPOINT")
     api_key = args.api_key or os.environ.get("LLM_API_KEY", "EMPTY")
