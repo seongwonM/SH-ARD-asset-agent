@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(git ls-remote *)",
+      "Bash(gh repo *)",
+      "Bash(git fetch *)",
+      "Bash(git ls-tree *)",
+      "Bash(git branch *)",
+      "WebSearch",
+      "Bash(kubectl config *)",
+      "Bash(kubectl get *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('run.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -m py_compile run.py)",
+      "Bash(python3 -c \"import yaml, sys; yaml.safe_load\\(open\\('k8s/column-poc-job.yaml'\\)\\)\")",
+      "Bash(/Users/a11793/projects/asset-context-agent/column_semantic_poc/.venv/bin/python -c \"import yaml\")",
+      "Bash(pip install *)",
+      "Bash(python3 -c ' *)",
+      "Bash(kubectl apply *)",
+      "Bash(/Users/a11793/projects/asset-context-agent/column_semantic_poc/.venv/bin/pip install *)",
+      "Bash(/Users/a11793/projects/asset-context-agent/column_semantic_poc/.venv/bin/python -c ' *)"
+    ]
+  }
+}
