@@ -401,6 +401,163 @@ def build_table_evidence(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------
+# Skill-requested data probes
+#
+# Skills cannot see row-level data, only aggregated evidence, so they cannot
+# reliably compute an exact cross-column relationship themselves. When a
+# skill's output attaches a `probe` request to a check — an arithmetic
+# expression over named columns, e.g. "a + b" or "a <= b" — this evaluates
+# that specific, skill-declared expression against the real dataframe and
+# returns the measured result. It is a general-purpose safe calculator, not
+# a fixed list of named operations: it does not decide *which* claims are
+# worth checking or *what* relationship to test (that is the skill's job),
+# it only knows how to safely evaluate arithmetic/comparison expressions.
+# Extending what a skill can ask for means extending the expression it
+# writes, not adding a case here.
+# ---------------------------------------------------------------------
+
+import ast
+import operator
+
+_PROBE_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_PROBE_UNARYOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+_PROBE_COMPARE = {
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+}
+_PROBE_FUNCS = {"abs": np.abs, "min": np.minimum, "max": np.maximum, "round": np.round}
+
+
+class ProbeExpressionError(Exception):
+    pass
+
+
+def _eval_probe_node(node: ast.AST, variables: Dict[str, pd.Series]) -> Any:
+    if isinstance(node, ast.Expression):
+        return _eval_probe_node(node.body, variables)
+    if isinstance(node, ast.BinOp) and type(node.op) in _PROBE_BINOPS:
+        return _PROBE_BINOPS[type(node.op)](
+            _eval_probe_node(node.left, variables), _eval_probe_node(node.right, variables)
+        )
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _PROBE_UNARYOPS:
+        return _PROBE_UNARYOPS[type(node.op)](_eval_probe_node(node.operand, variables))
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in _PROBE_COMPARE:
+        return _PROBE_COMPARE[type(node.ops[0])](
+            _eval_probe_node(node.left, variables), _eval_probe_node(node.comparators[0], variables)
+        )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _PROBE_FUNCS
+        and not node.keywords
+    ):
+        return _PROBE_FUNCS[node.func.id](*(_eval_probe_node(a, variables) for a in node.args))
+    if isinstance(node, ast.Name):
+        if node.id not in variables:
+            raise ProbeExpressionError(f"unknown variable: {node.id}")
+        return variables[node.id]
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    raise ProbeExpressionError(f"disallowed expression: {ast.dump(node)}")
+
+
+def eval_probe_expression(expression: str, variables: Dict[str, pd.Series]) -> Any:
+    tree = ast.parse(expression, mode="eval")
+    return _eval_probe_node(tree, variables)
+
+
+def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    expression = probe.get("expression")
+    columns = probe.get("columns")
+    if not isinstance(expression, str) or not isinstance(columns, dict) or not columns:
+        return None
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in columns.items()):
+        return None
+    if not all(col in df.columns for col in columns.values()):
+        return None
+
+    variables: Dict[str, pd.Series] = {}
+    valid = pd.Series(True, index=df.index)
+    for alias, col in columns.items():
+        s = pd.to_numeric(df[col], errors="coerce")
+        variables[alias] = s
+        valid &= s.notna()
+    if valid.sum() < 3:
+        return None
+    variables = {k: v[valid] for k, v in variables.items()}
+
+    try:
+        result = eval_probe_expression(expression, variables)
+    except (ProbeExpressionError, SyntaxError, TypeError, ZeroDivisionError):
+        return None
+    if not isinstance(result, pd.Series) or len(result) == 0:
+        return None
+
+    observed: Dict[str, Any] = {"expression": expression, "columns": columns, "n": int(len(result))}
+
+    if result.dtype == bool:
+        observed["true_ratio"] = float(result.mean())
+    else:
+        result = result.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(result) == 0:
+            return None
+        observed["median"] = float(result.median())
+        observed["min"] = float(result.min())
+        observed["max"] = float(result.max())
+        target = probe.get("target")
+        if isinstance(target, (int, float)):
+            tolerance = probe.get("tolerance", 0.05)
+            observed["target"] = float(target)
+            observed["tolerance"] = float(tolerance)
+            observed["within_tolerance_ratio"] = float(((result - target).abs() <= tolerance).mean())
+
+    return observed
+
+
+def apply_probes(df: pd.DataFrame, validation: Dict[str, Any]) -> Dict[str, Any]:
+    checks = validation.get("checks")
+    if not isinstance(checks, list):
+        return validation
+
+    for check in checks:
+        probe = check.get("probe") if isinstance(check, dict) else None
+        if not isinstance(probe, dict):
+            continue
+        observed = run_probe(df, probe)
+        if observed is None:
+            continue
+
+        check["observed"] = observed
+        check["probe_verified"] = True
+        ratio = observed.get("within_tolerance_ratio", observed.get("true_ratio"))
+        if ratio is not None:
+            if ratio >= 0.95:
+                check["status"] = "pass"
+            elif ratio >= 0.7:
+                check["status"] = "warning"
+            else:
+                check["status"] = "fail"
+
+    if any(c.get("status") in {"warning", "fail"} for c in checks if isinstance(c, dict)):
+        validation["overall_status"] = "needs_revision"
+    elif checks:
+        validation["overall_status"] = "pass"
+
+    return validation
+
+
+# ---------------------------------------------------------------------
 # vLLM (OpenAI-compatible)
 # ---------------------------------------------------------------------
 
@@ -702,6 +859,8 @@ def run_pipeline(
             results,
             focus=step.get("focus", []),
         )
+        if skill == "semantic_validation":
+            results[skill] = apply_probes(df, results[skill])
 
     # Revision passes -------------------------------------------------
     for round_idx in range(2, max_rounds + 1):
@@ -746,6 +905,8 @@ def run_pipeline(
                 focus=step.get("focus", []),
                 revision_feedback=feedback,
             )
+            if skill == "semantic_validation":
+                results[skill] = apply_probes(df, results[skill])
 
         # Always regenerate final table context after a revision.
         print("[RE-EXEC] table_context")

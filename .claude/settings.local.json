@@ -19,7 +19,12 @@
       "Bash(python3 -c ' *)",
       "Bash(kubectl apply *)",
       "Bash(/Users/a11793/projects/asset-context-agent/column_semantic_poc/.venv/bin/pip install *)",
-      "Bash(/Users/a11793/projects/asset-context-agent/column_semantic_poc/.venv/bin/python -c ' *)"
+      "Bash(/Users/a11793/projects/asset-context-agent/column_semantic_poc/.venv/bin/python -c ' *)",
+      "Bash(PYTHONPATH=src:. python3 -c ' *)",
+      "Bash(python3 -m pip show langgraph)",
+      "Bash(pip3 install *)",
+      "Bash(python3 -m pytest -q)",
+      "Bash(echo \"exit code: $?\")"
     ]
   }
 }

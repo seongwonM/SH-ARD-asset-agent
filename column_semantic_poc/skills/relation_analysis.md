@@ -16,6 +16,13 @@ Prefer direct structural evidence over weak correlation:
 Treat prior column meanings as hypotheses.
 A high-confidence candidate may be revised when cross-column evidence contradicts it.
 
+# Suspected exact arithmetic relationships
+`pearson_corr` and `b_minus_a` tell you two numeric columns move together, but not the exact relationship, and you
+cannot compute one yourself — you don't have row-level data, only aggregated evidence. If a pair looks like it might
+satisfy an exact constraint (sum/difference/ratio/product equal to a constant, e.g. "these two probabilities look
+complementary"), do NOT assert it as fact. State it as a `relations` entry with `relation` describing the suspected
+constraint and moderate confidence, so `semantic_validation` can issue a data probe to confirm or refute it.
+
 # Revision feedback
 If the input contains `revision_feedback.checks`, those columns' current interpretation was already tested against
 data and failed (see each check's `hypothesis`, `expected_constraint`, `observed`). Use cross-column evidence to find
