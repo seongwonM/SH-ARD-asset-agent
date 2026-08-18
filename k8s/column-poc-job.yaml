@@ -18,9 +18,9 @@
 # apply해도 처음부터 다시 돌지 않는다. 특정 CSV가 실패해도(파싱/LLM 오류 등)
 # 나머지는 계속 돌고, 실패 목록은 마지막에 로그로 남는다.
 #
-# 이미지 태그는 이 파일에 한해 CI가 자동 갱신하지 않는다
-# (.github/workflows/build-push.yml은 k8s/pod.yaml, k8s/robustness-job.yaml만 sed로 갱신).
-# main 이미지가 바뀌면 아래 태그를 수동으로 k8s/pod.yaml과 맞춰줄 것.
+# 이미지 태그는 .github/workflows/build-push.yml이 커밋 SHA로 자동 갱신한다
+# (main뿐 아니라 exp/**도 - 방금 push된 그 브랜치 자신의 이미지로 갱신됨).
+# 수동으로 건드리지 말 것(pod.yaml/robustness-job.yaml과 동일).
 #
 # run.py는 os.getenv("LLM_MODEL")만 읽는다 - LLM_MODEL1/2/3로 폴백하는 로직이 없다.
 # 그런데 sh-ard-asset-agent-secret은 LLM_MODEL1/2/3 키로 되어 있어서
