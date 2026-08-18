@@ -4,10 +4,10 @@
 # 자체 배치 루프가 없다), 이 Job의 command에서 셸로 *.csv를 순회하며 하나씩 호출한다.
 #
 # column_semantic_poc는 deploy/Dockerfile에 COPY되어 있지 않아 GHCR 이미지 안에
-# 없다. 최초 1회, PVC에 코드를 올려둬야 한다:
+# 없다. 최초 1회(그리고 로컬에서 run.py/skills를 고칠 때마다), PVC에 코드를
+# 올려둬야 한다 - 이 kubectl cp가 빠지면 아래 Job은 "run.py가 없다"로 바로 실패한다:
 #
-#   kubectl apply -f k8s/pod.yaml                     # 아직 안 띄웠다면
-#   kubectl cp column_semantic_poc sh-ard-asset-agent:/data/column_semantic_poc
+#   ./k8s/scripts/upload-column-poc.ps1
 #
 # 실행:
 #   kubectl apply -f k8s/column-poc-job.yaml
