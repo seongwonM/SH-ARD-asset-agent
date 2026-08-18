@@ -28,6 +28,13 @@
 # LLM_MODEL이 비어 있는 채로 들어간다 - 클러스터마다 secret 내용이 달라 로컬에서는
 # 안 드러나고 "외부 환경"에서만 조용히 깨지는 이유가 이것이다.
 # 아래 env에서 LLM_MODEL1을 LLM_MODEL로 명시 매핑해 이를 메운다.
+#
+# 예전엔 여기서 pip install python-dotenv를 실행했다 - GHCR 이미지의
+# requirements.txt에는 dotenv가 없어서였다(column_semantic_poc/requirements.txt에만
+# 있고, 그건 Dockerfile이 쓰지 않는다). 하지만 폐쇄망 클러스터에선 PyPI 접근이
+# 안 되니 매 Job 실행마다 pip install이 그 자체로 실패 지점이었다. run.py의
+# dotenv import를 optional로 바꿔서(있으면 쓰고 없으면 스킵 - k8s는 secret이
+# 환경변수를 직접 주입하니 애초에 .env 파일이 필요 없다) 이 설치 자체를 없앴다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -51,8 +58,6 @@ spec:
             - -c
             - |
               set -uo pipefail
-              pip install --no-cache-dir --quiet python-dotenv
-
               SRC_DIR=/data/column_semantic_poc
               DATA_DIR=/data/robustness_test
               OUT_DIR=/data/robustness_test_results

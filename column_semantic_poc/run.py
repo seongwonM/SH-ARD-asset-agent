@@ -44,9 +44,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # k8s에서는 secret이 envFrom으로 환경변수를 직접 주입하므로 .env 파일이
+    # 없다 - python-dotenv는 로컬 개발 편의용일 뿐이라 없어도 계속 진행한다.
+    pass
 
 
 SKILL_ORDER = [
