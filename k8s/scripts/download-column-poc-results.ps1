@@ -8,19 +8,22 @@
   /data/robustness_test_results 전체 또는 -Target으로 지정한 파일 하나만
   로컬로 복사한다.
 
-  column-poc-job.yaml(Job: column-poc-batch) 결과: CSV를 실행할 때마다
-  <csv_stem>_<KST타임스탬프>/ 폴더가 하나 생기고(같은 CSV를 여러 번 돌려도
-  타임스탬프가 달라 서로 덮어쓰지 않는다), 그 안에 result.semantic.json +
-  run.log(성공/실패 모두 항상 남음, 맨 아래에 최종/partial 결과 포함)가 같이
-  들어있다. 중간에 죽은 CSV는 같은 폴더에 result.semantic.json.partial.json도
-  남아있다. (이 폴더 구조 이전에 쌓인 평평한 파일들은 그대로 있으니 같이 받힌다.)
+  column-poc-job.yaml(Job: column-poc-batch) 결과: Job이 시작될 때 KST 타임스탬프를
+  한 번 찍어 <실행타임스탬프>/ 폴더를 만들고, 그 실행이 처리한 CSV들이 전부
+  그 아래 <csv_stem>/ 하위폴더로 들어간다(Job 실행 한 번 = 실험 하나 = 폴더 하나 -
+  CSV마다 타임스탬프가 따로 찍히지 않는다). 각 <csv_stem>/ 안에는
+  result.semantic.json + run.log(성공/실패 모두 항상 남음, 맨 아래에 최종/partial
+  결과 포함)가 같이 들어있고, 중간에 죽었으면 result.semantic.json.partial.json도
+  남아있다. (이 구조 이전 버전들 - CSV마다 타임스탬프 폴더였던 것, 그 이전의
+  평평한 파일들 - 은 그대로 남아있으니 같이 받힌다.)
 
 .PARAMETER LocalDir
   결과를 받을 로컬 디렉터리. 없으면 생성한다.
 
 .PARAMETER Target
-  PVC 안 /data/robustness_test_results 아래에서 받아올 파일 또는 실험 폴더 이름
-  (예: my_asset_20260818_140500 - 폴더째로 받힌다). 생략하면 전체를 받는다.
+  PVC 안 /data/robustness_test_results 아래에서 받아올 파일 또는 폴더 경로
+  (예: 20260818_140500 - 그 실행 전체, 또는 20260818_140500/my_asset - CSV 하나만).
+  생략하면 전체를 받는다.
 
 .PARAMETER PodName
   경유할 디버그 Pod 이름. k8s/pod.yaml의 metadata.name과 맞춘다.
@@ -32,7 +35,8 @@
 
 .EXAMPLE
   ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
-  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target my_asset_20260818_140500
+  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target 20260818_140500
+  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target 20260818_140500/my_asset
 #>
 param(
     [string]$LocalDir = "results",
