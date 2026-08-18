@@ -28,11 +28,12 @@
 # 전의 평평한 <name>_<타임스탬프>.semantic.json 파일 - 은 마이그레이션 없이
 # 그대로 남아있다.)
 #
-# 이미 결과가 있는 CSV(현재 구조/직전 구조/그 이전 평평한 구조 셋 다 확인)는
-# 건너뛴다 — Job이 재시작(backoffLimit)되거나 다시 apply해도(이 경우 새 실행
-# 타임스탬프 폴더가 또 생기지만, 그 안에서는 이미 다른 실행에서 끝난 CSV를
-# 다시 돌지 않는다) 처음부터 다시 돌지 않는다. 특정 CSV가 실패해도(파싱/LLM
-# 오류 등) 나머지는 계속 돌고, 실패 목록은 마지막에 로그로 남는다.
+# 이전 결과가 있어도 매번 모든 CSV를 처음부터 다시 돈다 - "이미 결과 있으면
+# 건너뛴다"는 재개(resume) 기능이 예전엔 있었지만, 파이프라인 로직 자체가
+# 계속 바뀌는 지금은 예전 코드로 만든 결과를 "끝났음"으로 인정하는 게 오히려
+# 문제였다(새 로직이 실제로 도는 걸 확인할 수가 없었음) - 의도적으로 뺐다.
+# 특정 CSV가 실패해도(파싱/LLM 오류 등) 나머지는 계속 돌고, 실패 목록은
+# 마지막에 로그로 남는다.
 #
 # run.log에 run.py의 stdout/stderr 전체(각 skill/LLM 호출의 시작·완료·소요시간)가
 # 성공/실패 관계없이 항상 남는다 - 성공해도 지우지 않는다. 성공하면 로그 맨
@@ -111,25 +112,16 @@ spec:
 
               total=0
               ok=0
-              skipped=0
               failed=""
               for csv in "$DATA_DIR"/*.csv; do
                 total=$((total + 1))
                 name=$(basename "${csv%.csv}")
 
-                # 세 구조를 전부 "이미 끝났음"으로 인정한다 - 예전 실행 기록을 다시
-                # 도는 낭비를 막는다: (1) 지금 구조 $OUT_DIR/<실행타임스탬프>/<name>/,
-                # (2) 바로 전 버전(CSV마다 타임스탬프) $OUT_DIR/<name>_<타임스탬프>/,
-                # (3) 그 이전 평평한 파일 $OUT_DIR/<name>_<타임스탬프>.semantic.json.
-                if compgen -G "$OUT_DIR/*/${name}/result.semantic.json" > /dev/null \
-                    || compgen -G "$OUT_DIR/${name}_*/result.semantic.json" > /dev/null \
-                    || compgen -G "$OUT_DIR/${name}_*.semantic.json" > /dev/null; then
-                  echo "[SKIP] $name (이미 결과 있음)"
-                  skipped=$((skipped + 1))
-                  ok=$((ok + 1))
-                  continue
-                fi
-
+                # 이전 결과가 있든 없든 항상 다시 돈다 - 파이프라인 로직 자체가
+                # 계속 바뀌는 중이라 예전 결과(다른 코드로 만들어진)를 "이미
+                # 끝났음"으로 인정하면 새 로직이 실제로 뭘 하는지 확인할 수가
+                # 없다. 안전한 재개(resume)가 다시 필요해지면 여기에
+                # skip-if-exists 체크를 되살릴 것 - 지금은 의도적으로 뺐다.
                 exp_dir="$run_dir/$name"
                 mkdir -p "$exp_dir"
                 out="$exp_dir/result.semantic.json"
@@ -161,7 +153,7 @@ spec:
                 fi
               done
 
-              echo "==== 완료: ${total}개 중 ${ok}개 성공 (스킵 ${skipped}개 포함) ===="
+              echo "==== 완료: ${total}개 중 ${ok}개 성공 ===="
               if [ -n "$failed" ]; then
                 echo "[FAILED LIST]$failed"
                 echo "[FAILED LOGS] 이번 실행 폴더는 $run_dir 이고, 그 안의 <name>/run.log에 전체 로그(실패면 마지막에 partial 결과 포함)가 남아있다."
