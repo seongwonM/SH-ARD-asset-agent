@@ -8,12 +8,19 @@ Folder structure:
     run.py
     csv_repair.py
     skills/
-        planner.md
+        planner.md               1차 결과 검증 실패 시 재계획(replan) 전용
+        gap_planner.md            1차 해석 직후, 컬럼별 보충 skill 배정 판단
         semantic_type.md
-        column_interpretation.md
+        column_interpretation.md  컬럼별 병렬 호출 (1 call = 1 column)
         relation_analysis.md
-        semantic_validation.md
+        semantic_validation.md    관계그룹별 병렬 호출 (1 call = 1 group/단일컬럼배치)
         table_context.md
+        reconsider_ambiguous.md   gap skill: ambiguous 컬럼을 전체 문맥으로 재조정
+        explain_sparsity.md       gap skill: null/zero 비율이 높은 이유 추론
+        reconcile_type_meaning.md gap skill: semantic_type-meaning 충돌 해소
+
+1차 pass 순서(semantic_type -> column_interpretation -> [relation_analysis])는
+고정이라 LLM 계획 호출이 없다. planner.md는 검증 실패 후 재계획에만 쓰인다.
 
 Install:
     pip install -U pandas numpy openai
@@ -45,7 +52,9 @@ import math
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -84,7 +93,10 @@ SKILL_ORDER = [
     "semantic_validation",
     "table_context",
 ]
-REQUIRED_FIRST_PASS = {"semantic_type", "column_interpretation", "semantic_validation", "table_context"}
+
+# 1차 해석 직후 컬럼별로 부족한 점이 있으면 gap_planner가 이 중에서 골라 붙인다.
+# (Sato식 2단계 구조: 1차는 컬럼 독립적으로, 여기서는 다른 컬럼들의 확정 결과까지 보고 재조정)
+GAP_SKILLS = ["reconsider_ambiguous", "explain_sparsity", "reconcile_type_meaning"]
 
 
 # ---------------------------------------------------------------------
@@ -657,6 +669,36 @@ def parse_json_text(text: str) -> Dict[str, Any]:
     raise ValueError(f"JSON 응답 파싱 실패:\n{text[:1500]}")
 
 
+class RateLimiter:
+    """RPM 상한(슬라이딩 60초 윈도) + 동시 실행 수 상한을 같이 지키는 스레드세이프 리미터.
+
+    컬럼별/그룹별 병렬 호출이 전부 이걸 통해서 나가므로, 여러 스레드가 동시에
+    acquire()해도 분당 요청 수가 requests_per_minute을 넘지 않는다.
+    """
+
+    def __init__(self, requests_per_minute: int, max_concurrency: int):
+        self.max_concurrency = max(1, max_concurrency)
+        self._rpm = max(1, requests_per_minute)
+        self._lock = threading.Lock()
+        self._timestamps: List[float] = []
+        self._semaphore = threading.BoundedSemaphore(self.max_concurrency)
+
+    def acquire(self) -> None:
+        self._semaphore.acquire()
+        while True:
+            with self._lock:
+                now = time.time()
+                self._timestamps = [t for t in self._timestamps if now - t < 60]
+                if len(self._timestamps) < self._rpm:
+                    self._timestamps.append(now)
+                    return
+                wait = 60 - (now - self._timestamps[0])
+            time.sleep(max(wait, 0.05))
+
+    def release(self) -> None:
+        self._semaphore.release()
+
+
 def llm_json(
     client: Any,
     model: str,
@@ -665,6 +707,7 @@ def llm_json(
     max_retries: int = 1,
     label: str = "",
     timeline: Optional[List[Dict[str, Any]]] = None,
+    rate_limiter: Optional[RateLimiter] = None,
 ) -> Dict[str, Any]:
     user_text = json.dumps(clean_for_json(payload), ensure_ascii=False, indent=2)
     tag = f"[LLM:{label}]" if label else "[LLM]"
@@ -693,6 +736,8 @@ def llm_json(
             f"model={model}, 입력 {len(user_text):,}자)",
             flush=True,
         )
+        if rate_limiter is not None:
+            rate_limiter.acquire()
         started = time.time()
         try:
             resp = client.chat.completions.create(
@@ -735,6 +780,9 @@ def llm_json(
                     "input_chars": len(user_text),
                     "error": f"{type(e).__name__}: {e}",
                 })
+        finally:
+            if rate_limiter is not None:
+                rate_limiter.release()
 
     raise RuntimeError(f"LLM 호출 실패: {last_error}")
 
@@ -750,18 +798,20 @@ class SkillRunner:
         client: Any,
         model: str,
         timeline: Optional[List[Dict[str, Any]]] = None,
+        rate_limiter: Optional[RateLimiter] = None,
     ):
         self.skill_dir = skill_dir
         self.client = client
         self.model = model
         self.timeline = timeline
+        self.rate_limiter = rate_limiter
         self.skills = self._load_skills()
 
     def _load_skills(self) -> Dict[str, str]:
         found = {}
         for path in self.skill_dir.glob("*.md"):
             found[path.stem] = path.read_text(encoding="utf-8")
-        required = {"planner", *SKILL_ORDER}
+        required = {"planner", "gap_planner", *SKILL_ORDER, *GAP_SKILLS}
         missing = required - set(found)
         if missing:
             raise RuntimeError(f"skills 폴더에 필요한 skill이 없습니다: {sorted(missing)}")
@@ -770,23 +820,23 @@ class SkillRunner:
     def plan(
         self,
         evidence: Dict[str, Any],
-        previous_results: Optional[Dict[str, Any]] = None,
-        validation_feedback: Optional[Dict[str, Any]] = None,
-        replan: bool = False,
+        previous_results: Dict[str, Any],
+        validation_feedback: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """검증 실패 후 재계획. 1차 pass는 고정 순서라 이 함수를 거치지 않는다
+        (run_pipeline에서 파이썬으로 직접 순서를 정한다) - 여기는 항상 '지금까지의
+        결과 + 검증 실패 이유를 보고 다음에 뭘 해야 하는지' 판단하는 replan이다."""
         payload = {
             "objective": (
-                "CSV의 컬럼 의미를 evidence 기반으로 추론하고, "
-                "오류 전파를 최소화하면서 최종 Table Context를 생성한다."
+                "semantic_validation이 지적한 모순을 해소하도록, 필요한 skill만 다시 실행하는 계획을 세운다."
             ),
-            "mode": "replan" if replan else "first_pass",
             "available_skills": SKILL_ORDER,
             "table_summary": evidence["table"],
             "grain_candidates": evidence.get("grain_candidates", []),
             "has_pairwise_evidence": bool(
                 evidence.get("relation_evidence", {}).get("pairwise")
             ),
-            "previous_results": previous_results if replan else None,
+            "previous_results": previous_results,
             "validation_feedback": validation_feedback,
         }
         plan = llm_json(
@@ -794,12 +844,13 @@ class SkillRunner:
             self.model,
             self.skills["planner"],
             payload,
-            label="replan" if replan else "planner",
+            label="replan",
             timeline=self.timeline,
+            rate_limiter=self.rate_limiter,
         )
-        return self._sanitize_plan(plan, replan=replan)
+        return self._sanitize_plan(plan)
 
-    def _sanitize_plan(self, plan: Dict[str, Any], replan: bool) -> Dict[str, Any]:
+    def _sanitize_plan(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         raw_steps = plan.get("steps", [])
         valid_steps = []
         seen = set()
@@ -814,24 +865,185 @@ class SkillRunner:
                 })
                 seen.add(skill)
 
-        if not replan:
-            # Guarantee the safety-critical skeleton even if the LLM planner omits it.
-            for required in ["semantic_type", "column_interpretation"]:
-                if required not in seen:
-                    valid_steps.append({"skill": required, "goal": "required first-pass step", "focus": []})
-                    seen.add(required)
-
-            if "semantic_validation" not in seen:
-                valid_steps.append({"skill": "semantic_validation", "goal": "required validation", "focus": []})
-                seen.add("semantic_validation")
-            if "table_context" not in seen:
-                valid_steps.append({"skill": "table_context", "goal": "required final synthesis", "focus": []})
-                seen.add("table_context")
-
         # Enforce canonical order.
         valid_steps.sort(key=lambda x: SKILL_ORDER.index(x["skill"]))
         plan["steps"] = valid_steps
         return plan
+
+    def diagnose_gaps(self, evidence: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
+        """1차 해석(semantic_type/column_interpretation/relation_analysis) 직후 호출.
+        컬럼별 상태(ambiguous 여부, null/zero 비율, 타입-의미 충돌)를 보고 어떤 컬럼에
+        GAP_SKILLS 중 무엇을 붙일지 LLM이 판단한다 - 규칙표가 아니라 판단이 필요한
+        지점이라 여기만 planner에게 맡긴다."""
+        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
+        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
+        columns_summary = []
+        for col in evidence["table"]["columns"]:
+            profile = evidence["column_profiles"].get(col, {})
+            numeric = profile.get("numeric_profile") or {}
+            columns_summary.append({
+                "name": col,
+                "semantic_type": semantic_type.get(col),
+                "interpretation": column_interp.get(col),
+                "null_ratio": profile.get("null_ratio"),
+                "zero_ratio": numeric.get("zero_ratio"),
+            })
+
+        payload = {
+            "columns": columns_summary,
+            "available_gap_skills": GAP_SKILLS,
+        }
+        result = llm_json(
+            self.client,
+            self.model,
+            self.skills["gap_planner"],
+            payload,
+            label="gap_planner",
+            timeline=self.timeline,
+            rate_limiter=self.rate_limiter,
+        )
+        valid_columns = set(evidence["table"]["columns"])
+        assignments = [
+            a for a in (result.get("gap_assignments") or [])
+            if a.get("column") in valid_columns and a.get("skill") in GAP_SKILLS
+        ]
+        return {"gap_assignments": assignments}
+
+    def execute_column_interpretation_single(
+        self,
+        column: str,
+        evidence: Dict[str, Any],
+        semantic_type_result: Optional[Dict[str, Any]],
+        revision_feedback: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        semantic_type_cols = (semantic_type_result or {}).get("columns", {})
+        payload = {
+            "table": evidence["table"],
+            "target_column": column,
+            "column_profile": evidence["column_profiles"][column],
+            "raw_other_column_names": evidence["table"]["columns"],
+            "semantic_type": semantic_type_cols.get(column),
+            "revision_feedback": revision_feedback,
+        }
+        return llm_json(
+            self.client,
+            self.model,
+            self.skills["column_interpretation"],
+            payload,
+            label=f"column_interpretation:{column}",
+            timeline=self.timeline,
+            rate_limiter=self.rate_limiter,
+        )
+
+    def execute_gap_skill(
+        self,
+        skill_name: str,
+        column: str,
+        evidence: Dict[str, Any],
+        results: Dict[str, Any],
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
+        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
+
+        if skill_name == "reconsider_ambiguous":
+            other_resolved = {
+                c: v.get("selected_meaning")
+                for c, v in column_interp.items()
+                if c != column and v.get("status") == "resolved"
+            }
+            payload = {
+                "target_column": column,
+                "column_profile": evidence["column_profiles"][column],
+                "current_interpretation": column_interp.get(column),
+                "other_resolved_columns": other_resolved,
+                "reason": reason,
+            }
+        elif skill_name == "explain_sparsity":
+            payload = {
+                "target_column": column,
+                "column_profile": evidence["column_profiles"][column],
+                "current_interpretation": column_interp.get(column),
+                "table_summary": evidence["table"],
+                "reason": reason,
+            }
+        elif skill_name == "reconcile_type_meaning":
+            payload = {
+                "target_column": column,
+                "column_profile": evidence["column_profiles"][column],
+                "semantic_type": semantic_type.get(column),
+                "current_interpretation": column_interp.get(column),
+                "reason": reason,
+            }
+        else:
+            raise ValueError(f"알 수 없는 gap skill: {skill_name}")
+
+        return llm_json(
+            self.client,
+            self.model,
+            self.skills[skill_name],
+            payload,
+            label=f"{skill_name}:{column}",
+            timeline=self.timeline,
+            rate_limiter=self.rate_limiter,
+        )
+
+    def execute_semantic_validation_group(
+        self,
+        columns: List[str],
+        evidence: Dict[str, Any],
+        results: Dict[str, Any],
+        revision_feedback: Optional[Dict[str, Any]] = None,
+        group_label: str = "",
+    ) -> Dict[str, Any]:
+        col_set = set(columns)
+        column_profiles = {c: evidence["column_profiles"][c] for c in columns}
+        pairwise = [
+            p for p in evidence.get("relation_evidence", {}).get("pairwise", [])
+            if set(p.get("columns", [])) <= col_set
+        ]
+        grain_candidates = [
+            g for g in evidence.get("grain_candidates", [])
+            if set(g.get("columns", [])) <= col_set
+        ]
+        semantic_type_cols = (results.get("semantic_type") or {}).get("columns", {})
+        column_interp_cols = (results.get("column_interpretation") or {}).get("columns", {})
+        relation_analysis = results.get("relation_analysis") or {}
+        relation_analysis_scoped = {
+            "relations": [
+                r for r in relation_analysis.get("relations", [])
+                if set(r.get("columns", [])) <= col_set
+            ],
+            "revised_columns": {
+                c: v for c, v in (relation_analysis.get("revised_columns") or {}).items() if c in col_set
+            },
+            "groups": [
+                g for g in relation_analysis.get("groups", [])
+                if set(g.get("columns", [])) <= col_set
+            ],
+        }
+
+        payload = {
+            "table": evidence["table"],
+            "column_profiles": column_profiles,
+            "relation_evidence": {"pairwise": pairwise},
+            "grain_candidates": grain_candidates,
+            "semantic_type": {"columns": {c: semantic_type_cols.get(c) for c in columns if c in semantic_type_cols}},
+            "column_interpretation": {
+                "columns": {c: column_interp_cols.get(c) for c in columns if c in column_interp_cols}
+            },
+            "relation_analysis": relation_analysis_scoped,
+            "revision_feedback": revision_feedback,
+        }
+        return llm_json(
+            self.client,
+            self.model,
+            self.skills["semantic_validation"],
+            payload,
+            label=f"semantic_validation:{group_label or '+'.join(columns)}",
+            timeline=self.timeline,
+            rate_limiter=self.rate_limiter,
+        )
 
     def execute_skill(
         self,
@@ -841,23 +1053,15 @@ class SkillRunner:
         focus: Optional[List[str]] = None,
         revision_feedback: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """semantic_type/relation_analysis/table_context 전용. column_interpretation은
+        execute_column_interpretation_single(컬럼별 병렬)로, semantic_validation은
+        execute_semantic_validation_group(그룹별 병렬)으로 각각 따로 처리한다."""
 
-        # First semantic passes get raw evidence + only the minimum allowed prior outputs.
         if skill_name == "semantic_type":
             payload = {
                 "table": evidence["table"],
                 "column_profiles": evidence["column_profiles"],
                 "raw_other_column_names": evidence["table"]["columns"],
-                "focus": focus or [],
-            }
-
-        elif skill_name == "column_interpretation":
-            payload = {
-                "table": evidence["table"],
-                "column_profiles": evidence["column_profiles"],
-                "raw_other_column_names": evidence["table"]["columns"],
-                "semantic_type": results.get("semantic_type"),
-                "revision_feedback": revision_feedback,
                 "focus": focus or [],
             }
 
@@ -870,19 +1074,6 @@ class SkillRunner:
                 "semantic_type": results.get("semantic_type"),
                 "column_interpretation": results.get("column_interpretation"),
                 "previous_relation_analysis": results.get("relation_analysis"),
-                "revision_feedback": revision_feedback,
-                "focus": focus or [],
-            }
-
-        elif skill_name == "semantic_validation":
-            payload = {
-                "table": evidence["table"],
-                "column_profiles": evidence["column_profiles"],
-                "relation_evidence": evidence["relation_evidence"],
-                "grain_candidates": evidence["grain_candidates"],
-                "semantic_type": results.get("semantic_type"),
-                "column_interpretation": results.get("column_interpretation"),
-                "relation_analysis": results.get("relation_analysis"),
                 "revision_feedback": revision_feedback,
                 "focus": focus or [],
             }
@@ -900,7 +1091,7 @@ class SkillRunner:
             }
 
         else:
-            raise ValueError(f"알 수 없는 skill: {skill_name}")
+            raise ValueError(f"execute_skill은 {skill_name}을 처리하지 않는다 (전용 메서드를 쓸 것)")
 
         return llm_json(
             self.client,
@@ -909,7 +1100,205 @@ class SkillRunner:
             payload,
             label=skill_name,
             timeline=self.timeline,
+            rate_limiter=self.rate_limiter,
         )
+
+
+# ---------------------------------------------------------------------
+# 병렬 오케스트레이션 (컬럼별 column_interpretation, 그룹별 semantic_validation,
+# gap skill 진단/실행) - run_pipeline이 이 함수들을 조합해서 쓴다.
+# ---------------------------------------------------------------------
+
+def run_column_interpretation_parallel(
+    runner: SkillRunner,
+    evidence: Dict[str, Any],
+    results: Dict[str, Any],
+    rate_limiter: RateLimiter,
+    columns: List[str],
+    revision_feedback: Optional[Dict[str, Any]] = None,
+    existing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """columns 각각에 대해 column_interpretation을 병렬로 호출한다. existing이 있으면
+    (재검증 라운드에서 focus로 좁힌 경우) 그 위에 columns만 덮어쓰고 나머지 컬럼은
+    이전 라운드 결과를 그대로 유지한다."""
+    semantic_type_result = results.get("semantic_type")
+    merged: Dict[str, Any] = dict(existing or {})
+
+    print(f"[PARALLEL] column_interpretation {len(columns)}개 컬럼 병렬 실행", flush=True)
+    with ThreadPoolExecutor(max_workers=rate_limiter.max_concurrency) as pool:
+        futures = {
+            pool.submit(
+                runner.execute_column_interpretation_single,
+                col, evidence, semantic_type_result, revision_feedback,
+            ): col
+            for col in columns
+        }
+        for future in as_completed(futures):
+            col = futures[future]
+            merged[col] = future.result()
+
+    return {"columns": merged}
+
+
+def build_relation_groups(
+    all_columns: List[str],
+    relation_analysis_result: Optional[Dict[str, Any]],
+    grain_candidates: List[Dict[str, Any]],
+    pairwise_evidence: List[Dict[str, Any]],
+) -> Tuple[List[List[str]], List[str]]:
+    """관련 있는 컬럼들을 union-find로 묶는다. relation_analysis가 돌았으면 그 결과
+    (통계+이름+의미까지 보고 LLM이 확정한 관계)를 쓰고, 안 돌았으면(플래너가 pairwise
+    증거 없다고 판단해 애초에 relation_analysis를 안 돌린 경우) evidence의 pairwise
+    통계만 쓴다 - 그 경우 강한 관계가 거의 없다는 뜻이라 대부분 단일 컬럼으로 남는 게
+    맞다. grain_candidates(복합키 후보)도 같은 방식으로 묶는다."""
+    parent: Dict[str, str] = {c: c for c in all_columns}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union_all(cols: List[str]) -> None:
+        cols = [c for c in cols if c in parent]
+        for c in cols[1:]:
+            ra, rb = find(cols[0]), find(c)
+            if ra != rb:
+                parent[ra] = rb
+
+    if relation_analysis_result:
+        for g in relation_analysis_result.get("groups", []) or []:
+            union_all(g.get("columns", []))
+        for r in relation_analysis_result.get("relations", []) or []:
+            union_all(r.get("columns", []))
+    else:
+        for pair in pairwise_evidence or []:
+            union_all(pair.get("columns", []))
+
+    for g in grain_candidates or []:
+        cols = g.get("columns", [])
+        if len(cols) > 1:
+            union_all(cols)
+
+    buckets: Dict[str, List[str]] = {}
+    for c in all_columns:
+        buckets.setdefault(find(c), []).append(c)
+
+    groups = [cols for cols in buckets.values() if len(cols) > 1]
+    ungrouped = [cols[0] for cols in buckets.values() if len(cols) == 1]
+    return groups, ungrouped
+
+
+def run_semantic_validation_grouped(
+    runner: SkillRunner,
+    evidence: Dict[str, Any],
+    results: Dict[str, Any],
+    rate_limiter: RateLimiter,
+    revision_feedback: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """테이블 전체를 한 번에 넣는 대신, relation_analysis가 확정한 관계 그룹별로
+    쪼개서 병렬 검증한다. 어느 그룹에도 안 걸린 컬럼들은 하나의 배치로 묶어
+    (컬럼 간 관계가 없으니 단일 컬럼 제약만 검증) 같이 병렬 실행한다."""
+    all_columns = evidence["table"]["columns"]
+    groups, ungrouped = build_relation_groups(
+        all_columns,
+        results.get("relation_analysis"),
+        evidence.get("grain_candidates", []),
+        evidence.get("relation_evidence", {}).get("pairwise", []),
+    )
+
+    jobs: List[Tuple[str, List[str]]] = [(f"group{i + 1}", g) for i, g in enumerate(groups)]
+    if ungrouped:
+        jobs.append(("ungrouped", ungrouped))
+
+    print(
+        f"[VALIDATE] {len(jobs)}개 단위 병렬 검증 "
+        f"(관계그룹 {len(groups)}개, 단일컬럼 배치 "
+        f"{'1개(' + str(len(ungrouped)) + '개 컬럼)' if ungrouped else '없음'})",
+        flush=True,
+    )
+
+    outputs: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=rate_limiter.max_concurrency) as pool:
+        futures = {
+            pool.submit(
+                runner.execute_semantic_validation_group,
+                cols, evidence, results, revision_feedback, label,
+            ): label
+            for label, cols in jobs
+        }
+        for future in as_completed(futures):
+            label = futures[future]
+            outputs[label] = future.result()
+
+    merged_checks: List[Dict[str, Any]] = []
+    merged_requests: List[Dict[str, Any]] = []
+    merged_validated: Dict[str, Any] = {}
+    any_needs_revision = False
+    for out in outputs.values():
+        merged_checks.extend(out.get("checks", []) or [])
+        merged_requests.extend(out.get("revision_requests", []) or [])
+        merged_validated.update(out.get("validated_columns", {}) or {})
+        if out.get("overall_status") == "needs_revision":
+            any_needs_revision = True
+
+    return {
+        "overall_status": "needs_revision" if any_needs_revision else "pass",
+        "checks": merged_checks,
+        "revision_requests": merged_requests,
+        "validated_columns": merged_validated,
+    }
+
+
+def run_gap_resolution(
+    runner: SkillRunner,
+    evidence: Dict[str, Any],
+    results: Dict[str, Any],
+    rate_limiter: RateLimiter,
+) -> List[Dict[str, Any]]:
+    """1차 해석(semantic_type/column_interpretation/relation_analysis) 직후 호출.
+    gap_planner가 컬럼별 상태를 보고 GAP_SKILLS 중 뭘 붙일지 판단하면, 그 배정을
+    병렬로 실행해서 column_interpretation.columns[col]에 반영한다."""
+    diagnosis = runner.diagnose_gaps(evidence, results)
+    assignments = diagnosis.get("gap_assignments", [])
+    if not assignments:
+        print("[GAP] 보충 필요한 컬럼 없음", flush=True)
+        return []
+
+    print(
+        f"[GAP] {len(assignments)}건 보충 실행: "
+        + ", ".join(f"{a['column']}->{a['skill']}" for a in assignments),
+        flush=True,
+    )
+
+    outputs: Dict[int, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=rate_limiter.max_concurrency) as pool:
+        futures = {
+            pool.submit(
+                runner.execute_gap_skill,
+                a["skill"], a["column"], evidence, results, a.get("reason", ""),
+            ): i
+            for i, a in enumerate(assignments)
+        }
+        for future in as_completed(futures):
+            outputs[futures[future]] = future.result()
+
+    columns = results.setdefault("column_interpretation", {}).setdefault("columns", {})
+    for i, a in enumerate(assignments):
+        out = outputs.get(i)
+        col = a["column"]
+        if not isinstance(out, dict) or col not in columns:
+            continue
+        for key in ("selected_meaning", "status", "sparsity_reason", "note"):
+            # None은 "이번엔 안 바꿈"이라는 뜻이라 - 있는 값을 null로 지워버리면 안 된다.
+            if out.get(key) is not None:
+                columns[col][key] = out[key]
+        columns[col].setdefault("gap_history", []).append({
+            "skill": a["skill"],
+            "reason": a.get("reason", ""),
+        })
+
+    return assignments
 
 
 def run_pipeline(
@@ -942,14 +1331,19 @@ def run_pipeline(
         "elapsed_seconds": round(profile_elapsed, 3),
     })
     evidence["table"]["source_file"] = csv_path.name
+    all_columns = evidence["table"]["columns"]
 
     client, model = make_client()
-    runner = SkillRunner(skill_dir, client, model, timeline=timeline)
+    rate_limiter = RateLimiter(
+        requests_per_minute=int(os.environ.get("LLM_REQUESTS_PER_MINUTE", "360")),
+        max_concurrency=int(os.environ.get("LLM_MAX_CONCURRENCY", "12")),
+    )
+    runner = SkillRunner(skill_dir, client, model, timeline=timeline, rate_limiter=rate_limiter)
 
     results: Dict[str, Any] = {}
     plans: List[Dict[str, Any]] = []
 
-    def build_result(status: str) -> Dict[str, Any]:
+    def build_result(status: str, validation_status: str = "not_yet_run") -> Dict[str, Any]:
         return clean_for_json({
             "meta": {
                 "source_csv": str(csv_path),
@@ -957,6 +1351,7 @@ def run_pipeline(
                 "llm_model": model,
                 "max_rounds": max_rounds,
                 "status": status,
+                "validation_status": validation_status,
                 "started_at": run_started_at,
                 "finished_at": now_iso(),
                 "elapsed_seconds": round(time.time() - run_started, 3),
@@ -975,44 +1370,114 @@ def run_pipeline(
             encoding="utf-8",
         )
 
-    # First pass -------------------------------------------------------
-    plan = runner.plan(evidence)
-    plans.append(plan)
-    print("[PLAN 1]", " -> ".join(step["skill"] for step in plan["steps"]), flush=True)
-
-    for step in plan["steps"]:
-        skill = step["skill"]
-        print(f"[EXEC] {skill} 시작", flush=True)
-        step_started_at = now_iso()
-        step_started = time.time()
-        results[skill] = runner.execute_skill(
-            skill,
-            evidence,
-            results,
-            focus=step.get("focus", []),
-        )
-        step_elapsed = time.time() - step_started
-        timeline.append({
-            "event": "skill", "phase": "exec", "skill": skill,
-            "started_at": step_started_at, "finished_at": now_iso(),
-            "elapsed_seconds": round(step_elapsed, 3),
-        })
-        if skill == "semantic_validation":
-            probe_started_at = now_iso()
-            probe_started = time.time()
-            results[skill] = apply_probes(raw_df, results[skill])
-            probe_elapsed = time.time() - probe_started
-            print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
-            timeline.append({
-                "event": "probe", "skill": "semantic_validation",
-                "started_at": probe_started_at, "finished_at": now_iso(),
-                "elapsed_seconds": round(probe_elapsed, 3),
-            })
-        print(f"[EXEC] {skill} 완료 ({step_elapsed:.1f}초)", flush=True)
+    def exec_step(skill: str, phase: str, round_idx: Optional[int] = None, **kwargs: Any) -> None:
+        """semantic_type/relation_analysis/table_context 전용 - 단일 LLM 호출로 끝나는 skill."""
+        label = f"[{'EXEC' if phase == 'exec' else 'RE-EXEC'}]"
+        print(f"{label} {skill} 시작", flush=True)
+        started_at = now_iso()
+        started = time.time()
+        results[skill] = runner.execute_skill(skill, evidence, results, **kwargs)
+        elapsed = time.time() - started
+        entry = {
+            "event": "skill", "phase": phase, "skill": skill,
+            "started_at": started_at, "finished_at": now_iso(),
+            "elapsed_seconds": round(elapsed, 3),
+        }
+        if round_idx is not None:
+            entry["round"] = round_idx
+        timeline.append(entry)
+        print(f"{label} {skill} 완료 ({elapsed:.1f}초)", flush=True)
         save_checkpoint()
 
-    # Revision passes -------------------------------------------------
+    def exec_validation(phase: str, round_idx: Optional[int] = None, revision_feedback: Optional[Dict[str, Any]] = None) -> None:
+        label = f"[{'EXEC' if phase == 'exec' else 'RE-EXEC'}]"
+        print(f"{label} semantic_validation 시작", flush=True)
+        started_at = now_iso()
+        started = time.time()
+        results["semantic_validation"] = run_semantic_validation_grouped(
+            runner, evidence, results, rate_limiter, revision_feedback=revision_feedback,
+        )
+        probe_started_at = now_iso()
+        probe_started = time.time()
+        results["semantic_validation"] = apply_probes(raw_df, results["semantic_validation"])
+        probe_elapsed = time.time() - probe_started
+        print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
+        probe_entry = {
+            "event": "probe", "skill": "semantic_validation",
+            "started_at": probe_started_at, "finished_at": now_iso(),
+            "elapsed_seconds": round(probe_elapsed, 3),
+        }
+        if round_idx is not None:
+            probe_entry["round"] = round_idx
+        timeline.append(probe_entry)
+        elapsed = time.time() - started
+        entry = {
+            "event": "skill", "phase": phase, "skill": "semantic_validation",
+            "started_at": started_at, "finished_at": now_iso(),
+            "elapsed_seconds": round(elapsed, 3),
+        }
+        if round_idx is not None:
+            entry["round"] = round_idx
+        timeline.append(entry)
+        print(f"{label} semantic_validation 완료 ({elapsed:.1f}초)", flush=True)
+        save_checkpoint()
+
+    # 1차 pass — 고정 뼈대(판단 여지 없음), LLM 계획 호출 없이 파이썬으로 순서를 정한다.
+    # relation_analysis만 데이터 근거(pairwise 증거 유무)로 조건부 포함한다.
+    has_pairwise = bool(evidence.get("relation_evidence", {}).get("pairwise"))
+    first_pass_skills = ["semantic_type", "column_interpretation"]
+    if has_pairwise:
+        first_pass_skills.append("relation_analysis")
+    print(
+        "[PLAN] 1차 고정 순서:", " -> ".join(first_pass_skills),
+        "" if has_pairwise else "(pairwise 증거 없어 relation_analysis 생략)",
+        flush=True,
+    )
+
+    for skill in first_pass_skills:
+        if skill == "column_interpretation":
+            print(f"[EXEC] {skill} 시작", flush=True)
+            step_started_at = now_iso()
+            step_started = time.time()
+            results[skill] = run_column_interpretation_parallel(
+                runner, evidence, results, rate_limiter, columns=all_columns,
+            )
+            step_elapsed = time.time() - step_started
+            timeline.append({
+                "event": "skill", "phase": "exec", "skill": skill,
+                "started_at": step_started_at, "finished_at": now_iso(),
+                "elapsed_seconds": round(step_elapsed, 3),
+            })
+            print(f"[EXEC] {skill} 완료 ({step_elapsed:.1f}초)", flush=True)
+            save_checkpoint()
+        else:
+            exec_step(skill, phase="exec")
+
+    # Gap 진단 및 보충 — planner(gap_planner)가 컬럼별로 뭐가 부족한지 판단하고,
+    # 해당하는 것만 병렬로 보충한다 (Sato식 2단계: 1차 독립 → 확정된 컬럼들을
+    # 문맥으로 재조정).
+    gap_started_at = now_iso()
+    gap_started = time.time()
+    gap_assignments = run_gap_resolution(runner, evidence, results, rate_limiter)
+    gap_elapsed = time.time() - gap_started
+    timeline.append({
+        "event": "gap_resolution",
+        "assignments": len(gap_assignments),
+        "started_at": gap_started_at, "finished_at": now_iso(),
+        "elapsed_seconds": round(gap_elapsed, 3),
+    })
+    save_checkpoint()
+
+    # semantic_validation (관계 그룹별 병렬) → table_context (1차 마무리)
+    exec_validation(phase="exec")
+    exec_step("table_context", phase="exec")
+
+    # Revision passes — 검증이 needs_revision이면 replan(기존 메커니즘)으로
+    # 필요한 skill만 다시 돈다. max_rounds까지 반복해도 여전히 실패면 아래에서
+    # meta.validation_status로 명시한다 - 실패한 채 "done"으로만 남기지 않는다.
+    rounds_run = 1
     for round_idx in range(2, max_rounds + 1):
+        rounds_run = round_idx
         validation = results.get("semantic_validation") or {}
         if validation.get("overall_status") != "needs_revision":
             break
@@ -1024,12 +1489,7 @@ def run_pipeline(
                 if x.get("status") in {"warning", "fail"}
             ],
         }
-        replan = runner.plan(
-            evidence,
-            previous_results=results,
-            validation_feedback=feedback,
-            replan=True,
-        )
+        replan = runner.plan(evidence, previous_results=results, validation_feedback=feedback)
 
         # A revision must end in validation; table context is refreshed after validation.
         skills_to_run = [s for s in replan.get("steps", []) if s["skill"] != "table_context"]
@@ -1041,61 +1501,52 @@ def run_pipeline(
             })
         skills_to_run.sort(key=lambda x: SKILL_ORDER.index(x["skill"]))
 
-        plans.append({"reason": replan.get("reason", ""), "steps": skills_to_run})
+        plans.append({"round": round_idx, "reason": replan.get("reason", ""), "steps": skills_to_run})
         print(f"[PLAN {round_idx}]", " -> ".join(step["skill"] for step in skills_to_run), flush=True)
 
         for step in skills_to_run:
             skill = step["skill"]
-            print(f"[RE-EXEC] {skill} 시작", flush=True)
-            step_started_at = now_iso()
-            step_started = time.time()
-            results[skill] = runner.execute_skill(
-                skill,
-                evidence,
-                results,
-                focus=step.get("focus", []),
-                revision_feedback=feedback,
-            )
-            step_elapsed = time.time() - step_started
-            timeline.append({
-                "event": "skill", "phase": "re-exec", "skill": skill, "round": round_idx,
-                "started_at": step_started_at, "finished_at": now_iso(),
-                "elapsed_seconds": round(step_elapsed, 3),
-            })
-            if skill == "semantic_validation":
-                probe_started_at = now_iso()
-                probe_started = time.time()
-                results[skill] = apply_probes(raw_df, results[skill])
-                probe_elapsed = time.time() - probe_started
-                print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
+            if skill == "column_interpretation":
+                focus_cols = step.get("focus") or all_columns
+                existing = (results.get("column_interpretation") or {}).get("columns", {})
+                print(f"[RE-EXEC] {skill} 시작 ({len(focus_cols)}개 컬럼)", flush=True)
+                step_started_at = now_iso()
+                step_started = time.time()
+                results[skill] = run_column_interpretation_parallel(
+                    runner, evidence, results, rate_limiter,
+                    columns=focus_cols, revision_feedback=feedback, existing=existing,
+                )
+                step_elapsed = time.time() - step_started
                 timeline.append({
-                    "event": "probe", "skill": "semantic_validation", "round": round_idx,
-                    "started_at": probe_started_at, "finished_at": now_iso(),
-                    "elapsed_seconds": round(probe_elapsed, 3),
+                    "event": "skill", "phase": "re-exec", "skill": skill, "round": round_idx,
+                    "started_at": step_started_at, "finished_at": now_iso(),
+                    "elapsed_seconds": round(step_elapsed, 3),
                 })
-            print(f"[RE-EXEC] {skill} 완료 ({step_elapsed:.1f}초)", flush=True)
-            save_checkpoint()
+                print(f"[RE-EXEC] {skill} 완료 ({step_elapsed:.1f}초)", flush=True)
+                save_checkpoint()
+            elif skill == "semantic_validation":
+                exec_validation(phase="re-exec", round_idx=round_idx, revision_feedback=feedback)
+            else:
+                exec_step(skill, phase="re-exec", round_idx=round_idx, focus=step.get("focus", []), revision_feedback=feedback)
 
         # Always regenerate final table context after a revision.
-        print("[RE-EXEC] table_context 시작", flush=True)
-        tc_started_at = now_iso()
-        tc_started = time.time()
-        results["table_context"] = runner.execute_skill(
-            "table_context",
-            evidence,
-            results,
-            revision_feedback=feedback,
-        )
-        tc_elapsed = time.time() - tc_started
-        timeline.append({
-            "event": "skill", "phase": "re-exec", "skill": "table_context", "round": round_idx,
-            "started_at": tc_started_at, "finished_at": now_iso(),
-            "elapsed_seconds": round(tc_elapsed, 3),
-        })
-        print(f"[RE-EXEC] table_context 완료 ({tc_elapsed:.1f}초)", flush=True)
-        save_checkpoint()
+        exec_step("table_context", phase="re-exec", round_idx=round_idx, revision_feedback=feedback)
 
-    final = build_result("done")
+    final_validation = results.get("semantic_validation") or {}
+    validation_status = "pass"
+    if final_validation.get("overall_status") == "needs_revision":
+        unresolved = [
+            c for c in final_validation.get("checks", []) if c.get("status") in {"warning", "fail"}
+        ]
+        validation_status = "unresolved_after_max_rounds"
+        print(
+            f"[VALIDATION] max_rounds({max_rounds}) 도달 - {rounds_run}라운드까지 돌았지만 "
+            f"여전히 needs_revision. 미해결 {len(unresolved)}건: "
+            + "; ".join((c.get("hypothesis") or "")[:60] for c in unresolved[:5]),
+            flush=True,
+        )
+
+    final = build_result("done", validation_status=validation_status)
     if checkpoint_path is not None and checkpoint_path.exists():
         checkpoint_path.unlink()
     return final
