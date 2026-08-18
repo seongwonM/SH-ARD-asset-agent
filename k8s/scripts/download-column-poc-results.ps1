@@ -9,8 +9,9 @@
   로컬로 복사한다.
 
   column-poc-job.yaml(Job: column-poc-batch) 결과: <csv_stem>.semantic.json
-  여러 개. 실패한 CSV가 있으면 <csv_stem>.error.log도 같은 디렉터리에
-  남아있으니(성공하면 자동 삭제됨) 같이 받힌다.
+  여러 개. CSV마다 <csv_stem>.log에 run.py 전체 출력(성공/실패 모두, 맨 아래에
+  최종/partial 결과 포함)이 항상 같이 남아있으니 같이 받힌다. 중간에 죽은 CSV는
+  <csv_stem>.semantic.json.partial.json도 남아있다.
 
 .PARAMETER LocalDir
   결과를 받을 로컬 디렉터리. 없으면 생성한다.
@@ -72,12 +73,6 @@ kubectl cp @nsArgs "${PodName}:${remotePath}" $LocalDir
 
 Write-Host "`n완료. 받은 내용:"
 Get-ChildItem -Recurse $LocalDir | ForEach-Object { Write-Host "  $($_.FullName)" }
-
-$errorLogs = Get-ChildItem -Recurse $LocalDir -Filter "*.error.log" -ErrorAction SilentlyContinue
-if ($errorLogs) {
-    Write-Host "`n실패한 CSV가 있습니다 (.error.log 참고):"
-    $errorLogs | ForEach-Object { Write-Host "  $($_.FullName)" }
-}
 
 $partials = Get-ChildItem -Recurse $LocalDir -Filter "*.partial.json" -ErrorAction SilentlyContinue
 if ($partials) {

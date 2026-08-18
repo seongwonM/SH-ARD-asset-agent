@@ -46,6 +46,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -89,6 +90,10 @@ REQUIRED_FIRST_PASS = {"semantic_type", "column_interpretation", "semantic_valid
 # ---------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 
 def json_safe(v: Any) -> Any:
     if v is None:
@@ -653,6 +658,7 @@ def llm_json(
     payload: Dict[str, Any],
     max_retries: int = 1,
     label: str = "",
+    timeline: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     user_text = json.dumps(clean_for_json(payload), ensure_ascii=False, indent=2)
     tag = f"[LLM:{label}]" if label else "[LLM]"
@@ -675,6 +681,7 @@ def llm_json(
                 "content": "이전 응답은 JSON 파싱에 실패했습니다. 설명/마크다운 없이 유효한 JSON만 반환하세요."
             })
 
+        started_at = now_iso()
         print(
             f"{tag} 요청 전송 (시도 {attempt + 1}/{max_retries + 1}, "
             f"model={model}, 입력 {len(user_text):,}자)",
@@ -689,13 +696,39 @@ def llm_json(
             text = resp.choices[0].message.content or ""
             elapsed = time.time() - started
             usage = getattr(resp, "usage", None)
-            tokens = f", 토큰 {usage.total_tokens}" if usage else ""
+            total_tokens = usage.total_tokens if usage else None
+            tokens = f", 토큰 {total_tokens}" if total_tokens is not None else ""
             print(f"{tag} 응답 수신 ({elapsed:.1f}초, 출력 {len(text):,}자{tokens})", flush=True)
+            if timeline is not None:
+                timeline.append({
+                    "event": "llm_call",
+                    "label": label,
+                    "attempt": attempt + 1,
+                    "started_at": started_at,
+                    "finished_at": now_iso(),
+                    "elapsed_seconds": round(elapsed, 3),
+                    "status": "ok",
+                    "input_chars": len(user_text),
+                    "output_chars": len(text),
+                    "tokens": total_tokens,
+                })
             return parse_json_text(text)
         except Exception as e:
             elapsed = time.time() - started
             last_error = e
             print(f"{tag} 실패 ({elapsed:.1f}초): {type(e).__name__}: {e}", flush=True)
+            if timeline is not None:
+                timeline.append({
+                    "event": "llm_call",
+                    "label": label,
+                    "attempt": attempt + 1,
+                    "started_at": started_at,
+                    "finished_at": now_iso(),
+                    "elapsed_seconds": round(elapsed, 3),
+                    "status": "error",
+                    "input_chars": len(user_text),
+                    "error": f"{type(e).__name__}: {e}",
+                })
 
     raise RuntimeError(f"LLM 호출 실패: {last_error}")
 
@@ -705,10 +738,17 @@ def llm_json(
 # ---------------------------------------------------------------------
 
 class SkillRunner:
-    def __init__(self, skill_dir: Path, client: Any, model: str):
+    def __init__(
+        self,
+        skill_dir: Path,
+        client: Any,
+        model: str,
+        timeline: Optional[List[Dict[str, Any]]] = None,
+    ):
         self.skill_dir = skill_dir
         self.client = client
         self.model = model
+        self.timeline = timeline
         self.skills = self._load_skills()
 
     def _load_skills(self) -> Dict[str, str]:
@@ -749,6 +789,7 @@ class SkillRunner:
             self.skills["planner"],
             payload,
             label="replan" if replan else "planner",
+            timeline=self.timeline,
         )
         return self._sanitize_plan(plan, replan=replan)
 
@@ -861,6 +902,7 @@ class SkillRunner:
             self.skills[skill_name],
             payload,
             label=skill_name,
+            timeline=self.timeline,
         )
 
 
@@ -871,6 +913,10 @@ def run_pipeline(
     max_rounds: int = 2,
     checkpoint_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    run_started = time.time()
+    run_started_at = now_iso()
+    timeline: List[Dict[str, Any]] = []
+
     raw_df = read_csv_safely(csv_path)
 
     if len(raw_df) > max_analysis_rows:
@@ -884,16 +930,24 @@ def run_pipeline(
     if sampled:
         print(f"[PROFILE] 분석 비용 제한으로 {len(df):,}개 행 샘플 사용", flush=True)
 
+    profile_started_at = now_iso()
     profile_started = time.time()
     evidence = build_table_evidence(df)
-    print(f"[PROFILE] 완료 ({time.time() - profile_started:.1f}초)", flush=True)
+    profile_elapsed = time.time() - profile_started
+    print(f"[PROFILE] 완료 ({profile_elapsed:.1f}초)", flush=True)
+    timeline.append({
+        "event": "profile",
+        "started_at": profile_started_at,
+        "finished_at": now_iso(),
+        "elapsed_seconds": round(profile_elapsed, 3),
+    })
     evidence["table"]["source_file"] = csv_path.name
     evidence["table"]["original_row_count"] = int(len(raw_df))
     evidence["table"]["analysis_sampled"] = sampled
     evidence["table"]["analysis_row_count"] = int(len(df))
 
     client, model = make_client()
-    runner = SkillRunner(skill_dir, client, model)
+    runner = SkillRunner(skill_dir, client, model, timeline=timeline)
 
     results: Dict[str, Any] = {}
     plans: List[Dict[str, Any]] = []
@@ -906,10 +960,14 @@ def run_pipeline(
                 "llm_model": model,
                 "max_rounds": max_rounds,
                 "status": status,
+                "started_at": run_started_at,
+                "finished_at": now_iso(),
+                "elapsed_seconds": round(time.time() - run_started, 3),
             },
             "plans": plans,
             "evidence": evidence,
             "results": results,
+            "timeline": timeline,
         })
 
     def save_checkpoint() -> None:
@@ -928,6 +986,7 @@ def run_pipeline(
     for step in plan["steps"]:
         skill = step["skill"]
         print(f"[EXEC] {skill} 시작", flush=True)
+        step_started_at = now_iso()
         step_started = time.time()
         results[skill] = runner.execute_skill(
             skill,
@@ -935,11 +994,24 @@ def run_pipeline(
             results,
             focus=step.get("focus", []),
         )
+        step_elapsed = time.time() - step_started
+        timeline.append({
+            "event": "skill", "phase": "exec", "skill": skill,
+            "started_at": step_started_at, "finished_at": now_iso(),
+            "elapsed_seconds": round(step_elapsed, 3),
+        })
         if skill == "semantic_validation":
+            probe_started_at = now_iso()
             probe_started = time.time()
             results[skill] = apply_probes(df, results[skill])
-            print(f"[PROBE] semantic_validation 검증 완료 ({time.time() - probe_started:.1f}초)", flush=True)
-        print(f"[EXEC] {skill} 완료 ({time.time() - step_started:.1f}초)", flush=True)
+            probe_elapsed = time.time() - probe_started
+            print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
+            timeline.append({
+                "event": "probe", "skill": "semantic_validation",
+                "started_at": probe_started_at, "finished_at": now_iso(),
+                "elapsed_seconds": round(probe_elapsed, 3),
+            })
+        print(f"[EXEC] {skill} 완료 ({step_elapsed:.1f}초)", flush=True)
         save_checkpoint()
 
     # Revision passes -------------------------------------------------
@@ -978,6 +1050,7 @@ def run_pipeline(
         for step in skills_to_run:
             skill = step["skill"]
             print(f"[RE-EXEC] {skill} 시작", flush=True)
+            step_started_at = now_iso()
             step_started = time.time()
             results[skill] = runner.execute_skill(
                 skill,
@@ -986,15 +1059,29 @@ def run_pipeline(
                 focus=step.get("focus", []),
                 revision_feedback=feedback,
             )
+            step_elapsed = time.time() - step_started
+            timeline.append({
+                "event": "skill", "phase": "re-exec", "skill": skill, "round": round_idx,
+                "started_at": step_started_at, "finished_at": now_iso(),
+                "elapsed_seconds": round(step_elapsed, 3),
+            })
             if skill == "semantic_validation":
+                probe_started_at = now_iso()
                 probe_started = time.time()
                 results[skill] = apply_probes(df, results[skill])
-                print(f"[PROBE] semantic_validation 검증 완료 ({time.time() - probe_started:.1f}초)", flush=True)
-            print(f"[RE-EXEC] {skill} 완료 ({time.time() - step_started:.1f}초)", flush=True)
+                probe_elapsed = time.time() - probe_started
+                print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
+                timeline.append({
+                    "event": "probe", "skill": "semantic_validation", "round": round_idx,
+                    "started_at": probe_started_at, "finished_at": now_iso(),
+                    "elapsed_seconds": round(probe_elapsed, 3),
+                })
+            print(f"[RE-EXEC] {skill} 완료 ({step_elapsed:.1f}초)", flush=True)
             save_checkpoint()
 
         # Always regenerate final table context after a revision.
         print("[RE-EXEC] table_context 시작", flush=True)
+        tc_started_at = now_iso()
         tc_started = time.time()
         results["table_context"] = runner.execute_skill(
             "table_context",
@@ -1002,7 +1089,13 @@ def run_pipeline(
             results,
             revision_feedback=feedback,
         )
-        print(f"[RE-EXEC] table_context 완료 ({time.time() - tc_started:.1f}초)", flush=True)
+        tc_elapsed = time.time() - tc_started
+        timeline.append({
+            "event": "skill", "phase": "re-exec", "skill": "table_context", "round": round_idx,
+            "started_at": tc_started_at, "finished_at": now_iso(),
+            "elapsed_seconds": round(tc_elapsed, 3),
+        })
+        print(f"[RE-EXEC] table_context 완료 ({tc_elapsed:.1f}초)", flush=True)
         save_checkpoint()
 
     final = build_result("done")
