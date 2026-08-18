@@ -28,7 +28,7 @@ Run:
     python run.py ./data.csv
 
 Optional:
-    python run.py ./data.csv --output result.json --max-analysis-rows 10000 --max-rounds 2
+    python run.py ./data.csv --output result.json --max-rounds 2
 
 Skill 하나가 끝날 때마다 <output>.partial.json에 그때까지의 plans/evidence/results를
 체크포인트로 남긴다. 파이프라인이 끝까지 성공하면 <output>에 최종 결과가 쓰이고
@@ -915,7 +915,6 @@ class SkillRunner:
 def run_pipeline(
     csv_path: Path,
     skill_dir: Path,
-    max_analysis_rows: int = 10000,
     max_rounds: int = 2,
     checkpoint_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -923,22 +922,17 @@ def run_pipeline(
     run_started_at = now_iso()
     timeline: List[Dict[str, Any]] = []
 
+    # 프로파일링/probe는 전부 pandas 연산이라 LLM 비용과 무관하다 - 행을 미리
+    # 샘플링해서 넘기면 uniqueness/상관관계/probe 통과율 같은 통계 자체가 부정확해질
+    # 뿐, LLM에 보내는 payload는 어차피 sample_values()가 컬럼당 12개로 이미
+    # 고정돼 있어 줄지 않는다. 그래서 df를 따로 안 만들고 raw_df를 그대로 쓴다.
     raw_df = read_csv_safely(csv_path)
 
-    if len(raw_df) > max_analysis_rows:
-        df = raw_df.sample(max_analysis_rows, random_state=42).reset_index(drop=True)
-        sampled = True
-    else:
-        df = raw_df.copy()
-        sampled = False
-
     print(f"[LOAD] {csv_path.name}: {len(raw_df):,} rows x {len(raw_df.columns)} cols", flush=True)
-    if sampled:
-        print(f"[PROFILE] 분석 비용 제한으로 {len(df):,}개 행 샘플 사용", flush=True)
 
     profile_started_at = now_iso()
     profile_started = time.time()
-    evidence = build_table_evidence(df)
+    evidence = build_table_evidence(raw_df)
     profile_elapsed = time.time() - profile_started
     print(f"[PROFILE] 완료 ({profile_elapsed:.1f}초)", flush=True)
     timeline.append({
@@ -948,9 +942,6 @@ def run_pipeline(
         "elapsed_seconds": round(profile_elapsed, 3),
     })
     evidence["table"]["source_file"] = csv_path.name
-    evidence["table"]["original_row_count"] = int(len(raw_df))
-    evidence["table"]["analysis_sampled"] = sampled
-    evidence["table"]["analysis_row_count"] = int(len(df))
 
     client, model = make_client()
     runner = SkillRunner(skill_dir, client, model, timeline=timeline)
@@ -1009,7 +1000,7 @@ def run_pipeline(
         if skill == "semantic_validation":
             probe_started_at = now_iso()
             probe_started = time.time()
-            results[skill] = apply_probes(df, results[skill])
+            results[skill] = apply_probes(raw_df, results[skill])
             probe_elapsed = time.time() - probe_started
             print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
             timeline.append({
@@ -1074,7 +1065,7 @@ def run_pipeline(
             if skill == "semantic_validation":
                 probe_started_at = now_iso()
                 probe_started = time.time()
-                results[skill] = apply_probes(df, results[skill])
+                results[skill] = apply_probes(raw_df, results[skill])
                 probe_elapsed = time.time() - probe_started
                 print(f"[PROBE] semantic_validation 검증 완료 ({probe_elapsed:.1f}초)", flush=True)
                 timeline.append({
@@ -1128,12 +1119,6 @@ def main() -> None:
         help="출력 JSON 경로. 기본값: <csv>.semantic.json",
     )
     parser.add_argument(
-        "--max-analysis-rows",
-        type=int,
-        default=10000,
-        help="프로파일링에 사용할 최대 행 수",
-    )
-    parser.add_argument(
         "--max-rounds",
         type=int,
         default=2,
@@ -1153,7 +1138,6 @@ def main() -> None:
     result = run_pipeline(
         csv_path=csv_path,
         skill_dir=args.skills.resolve(),
-        max_analysis_rows=args.max_analysis_rows,
         max_rounds=args.max_rounds,
         checkpoint_path=checkpoint_path,
     )

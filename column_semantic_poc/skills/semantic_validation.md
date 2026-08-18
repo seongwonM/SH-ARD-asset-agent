@@ -22,10 +22,13 @@ Per-column min/max CANNOT tell you a row-wise relationship: column A's min and c
 different rows, so "A's min is 0 and B's max is 1" does not mean "A+B is not 1 for each row". Do not guess `observed`
 for this kind of claim from marginal stats.
 
-Instead, whenever a hypothesis is a testable arithmetic or comparison relationship between numeric columns
-(e.g. "these two sum to 1", "a is always <= b", "a is roughly twice b"), attach a `probe` object to that check.
-`expression` is a Python-arithmetic/comparison expression using only the aliases you define in `columns`
-(no function calls other than `abs`/`min`/`max`/`round`, no other names, no loops/attributes/imports):
+This applies just as much to a **single column** as to a relationship between two — "a count should be
+non-negative" or "a percentage should stay within its stated scale" are exactly as testable as a cross-column
+relationship, and are just as prone to being wrong if left as your own unverified claim. Whenever a hypothesis is
+a testable arithmetic or comparison expression over one or more numeric columns (e.g. "these two sum to 1", "a is
+always <= b", "a is roughly twice b", "a is never negative"), attach a `probe` object to that check. `expression`
+is a Python-arithmetic/comparison expression using only the aliases you define in `columns` (no function calls
+other than `abs`/`min`/`max`/`round`, no other names, no loops/attributes/imports):
 ```json
 "probe": {
   "expression": "a + b",
@@ -34,12 +37,25 @@ Instead, whenever a hypothesis is a testable arithmetic or comparison relationsh
   "tolerance": 0.02
 }
 ```
+Single-column example — do not skip the probe just because there's only one column involved:
+```json
+"probe": {
+  "expression": "a >= 0",
+  "columns": {"a": "order_count"}
+}
+```
 - Use `target`/`tolerance` when `expression` computes a number that should be close to a constant.
-- Omit `target` when `expression` is itself a comparison (e.g. `"a <= b"`) — the executor reports what fraction of
-  rows satisfy it.
+- Omit `target` when `expression` is itself a comparison (e.g. `"a <= b"`, `"a >= 0"`) — the executor reports what
+  fraction of rows satisfy it.
 The executor evaluates this against the actual rows and overwrites that check's `observed`/`status` with the
 measured result — leave your own `observed`/`status` as a best-effort placeholder; it will be replaced. This is a
 general calculator, not a fixed menu — express whatever relationship you actually suspect.
+
+For percent/ratio-scale claims specifically: use the exact scale `column_interpretation.selected_meaning`'s `unit`
+already stated (e.g. `percent_0_100` vs `fraction_0_1`) as your probe's bound — do not re-guess the scale
+independently here. If you re-derive the bound from the same observed min/max that `column_interpretation` already
+used to pick that scale, the check is circular (guaranteed to pass, tests nothing); relying on the already-stated
+`unit` at least tests that the two stages agree, which a genuine misinterpretation would break.
 
 # Re-validation after revision
 If the input contains `revision_feedback.checks` from a prior round, re-test each of those exact

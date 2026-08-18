@@ -20,6 +20,18 @@ Use a data-friendly ontology rather than forcing every 5W1H slot:
 6. Write all free-text values (`row_grain.description`, `entities[].role`, `table_scope`, `asset_context`,
    `uncertainties`) in Korean (한국어). `asset_context` specifically must be a concise Korean description suitable
    for Asset Context retrieval.
+6a. Ground the description in what this specific table actually is, using the actual column names/meanings/values
+    already in the evidence — not a generic template filled with vague nouns ("어떤 장비", "특정 공장"). If the
+    evidence names a specific process, equipment type, product line, or measurement, say that. If the evidence
+    genuinely doesn't support a specific domain claim, say what's uncertain explicitly (rule 5/7) rather than
+    papering over the gap with a vague placeholder phrase — a vague sentence and an honest "unknown" read
+    differently to a reader even when the underlying evidence is the same.
+6b. For a column with an unusually high `null_ratio` or (for numeric columns) `zero_ratio`, don't just restate the
+    number in `uncertainties` — reason about why: is it a field that only applies to some rows (e.g. an
+    end/complete field that's null until the row is finished), a placeholder for a not-yet-integrated system, or a
+    genuine default/absence-of-signal value? State your best-supported explanation and flag it as inference, not
+    just the bare statistic. If the evidence truly gives no basis to explain it, say that plainly instead of
+    inventing a plausible-sounding reason.
 7. If `semantic_validation.checks` (or `revision_feedback.checks`) still contains `warning`/`fail` entries, reflect
    each one in `uncertainties` by name — state which columns and what concrete contradiction remains (e.g. "genre_dan
    최대값이 0.01로 다른 genre_* 컬럼과 스케일이 달라 동일 기준 확률로 보기 어려움"), not a generic sentence like
