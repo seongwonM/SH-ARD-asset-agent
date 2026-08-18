@@ -18,7 +18,7 @@ Install:
     pip install -U pandas numpy openai
 
 Required environment variables (k8s 안에서는 secret `sh-ard-asset-agent-secret`이
-envFrom으로 이 값들을 주입한다 — 로컬 실행 시에만 .env에 채운다):
+envFrom으로 이 값들을 주입한다 — 로컬 실행 시에만 .env에 채운다, python-dotenv 불필요, 자체 파서):
     LLM_API_ENDPOINT=http://<vllm-host>:8000/v1
     LLM_API_KEY=EMPTY
     LLM_MODEL=<served-model-name>
@@ -45,13 +45,26 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    # k8s에서는 secret이 envFrom으로 환경변수를 직접 주입하므로 .env 파일이
-    # 없다 - python-dotenv는 로컬 개발 편의용일 뿐이라 없어도 계속 진행한다.
-    pass
+
+def load_dotenv(path: str = ".env") -> None:
+    """값 뒤 인라인 주석까지 처리하는 최소 파서. 이미 설정된 환경변수는 덮지 않는다.
+
+    k8s에서는 secret이 envFrom으로 환경변수를 직접 주입하므로 .env 파일이 없다 -
+    그 경우 아무 것도 하지 않고 넘어간다. 로컬 실행 시에만 의미가 있다.
+    """
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.split(" #")[0].strip().strip("'\"")
+        os.environ.setdefault(key.strip(), value)
+
+
+load_dotenv()
 
 
 SKILL_ORDER = [
