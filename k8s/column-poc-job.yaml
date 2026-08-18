@@ -13,6 +13,9 @@
 #   kubectl apply -f k8s/column-poc-job.yaml
 #   kubectl logs -f job/column-poc-batch
 #
+# 결과 내려받기 (완료 후):
+#   ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
+#
 # 결과: /data/robustness_test_results/<csv_stem>.semantic.json 로 CSV마다 하나씩 쌓인다.
 # 이미 결과 파일이 있는 CSV는 건너뛴다 — Job이 재시작(backoffLimit)되거나 다시
 # apply해도 처음부터 다시 돌지 않는다. 특정 CSV가 실패해도(파싱/LLM 오류 등)
