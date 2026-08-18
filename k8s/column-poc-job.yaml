@@ -21,6 +21,13 @@
 # 이미지 태그는 이 파일에 한해 CI가 자동 갱신하지 않는다
 # (.github/workflows/build-push.yml은 k8s/pod.yaml, k8s/robustness-job.yaml만 sed로 갱신).
 # main 이미지가 바뀌면 아래 태그를 수동으로 k8s/pod.yaml과 맞춰줄 것.
+#
+# run.py는 os.getenv("LLM_MODEL")만 읽는다 - LLM_MODEL1/2/3로 폴백하는 로직이 없다.
+# 그런데 sh-ard-asset-agent-secret은 LLM_MODEL1/2/3 키로 되어 있어서
+# (robustness-job.yaml/pod.yaml이 쓰는 것과 같은 secret), envFrom만으로는
+# LLM_MODEL이 비어 있는 채로 들어간다 - 클러스터마다 secret 내용이 달라 로컬에서는
+# 안 드러나고 "외부 환경"에서만 조용히 깨지는 이유가 이것이다.
+# 아래 env에서 LLM_MODEL1을 LLM_MODEL로 명시 매핑해 이를 메운다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -91,6 +98,12 @@ spec:
           envFrom:
             - secretRef:
                 name: sh-ard-asset-agent-secret
+          env:
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: sh-ard-asset-agent-secret
+                  key: LLM_MODEL1
           volumeMounts:
             - name: data
               mountPath: /data
