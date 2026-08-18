@@ -24,6 +24,7 @@ Do not directly solve the table. Only make an execution plan.
    skill should resolve, so the skill concentrates on the reported contradictions instead of re-deriving everything.
 8. Do not invent a skill.
 9. Return JSON only.
+10. Write free-text values (`reason`, `goal`) in Korean (한국어). Keep `skill` values as the exact English literals listed above.
 
 # Output schema
 {

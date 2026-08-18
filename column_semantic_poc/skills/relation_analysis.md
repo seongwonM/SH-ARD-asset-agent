@@ -38,6 +38,10 @@ resolution (or why it still cannot be resolved) in `why`.
 - identify measure groups such as temperature/pressure/vibration
 - attach plausible unit evidence only if supported
 
+# Language
+Write `relation`, `evidence`, `why`, `remaining_alternatives`, and `interpretation` in Korean (한국어). Keep `type`
+values as the exact English literals listed in the schema below.
+
 # Output
 Return JSON only:
 {

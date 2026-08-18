@@ -17,6 +17,9 @@ A numeric physical dtype is not automatically a quantity.
 Small integer domains such as {1,2,3} may be category/status/rank.
 A string can be an identifier or code.
 
+# Language
+Write `evidence` strings in Korean (한국어). Keep `semantic_type` values as the exact English literals listed above.
+
 # Output
 Return JSON only:
 {

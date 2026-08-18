@@ -47,6 +47,11 @@ If the input contains `revision_feedback.checks` from a prior round, re-test eac
 round. For each one, state in the corresponding `checks` entry whether it is now resolved (`status: "pass"`) or still
 contradicted (`status: "warning" | "fail"`, keep the concrete `observed` numbers) — do not silently drop it.
 
+# Language
+Write `hypothesis`, `expected_constraint`, `observed`, `issue`, and `meaning` in Korean (한국어). Keep `status`/
+`severity` values as the exact English literals listed below, and keep `probe.expression`/`probe.columns` as literal
+Python/column identifiers (not natural language).
+
 # Output
 Return JSON only:
 {

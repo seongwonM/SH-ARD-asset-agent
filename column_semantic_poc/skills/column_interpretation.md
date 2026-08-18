@@ -19,6 +19,10 @@ Generate lexical expansions and ranked semantic meaning candidates for every col
    to `counter_evidence` and lower confidence, or (c) mark `status: "ambiguous"` if no candidate fits. Say explicitly in
    `evidence` that this was revised because of validation feedback.
 
+# Language
+Write `meaning`, `evidence`, and `counter_evidence` in Korean (한국어). `expansions[].word` may stay in whatever
+language the expanded token actually is (an English abbreviation expands to an English word; do not force-translate it).
+
 # Output
 Return JSON only:
 {

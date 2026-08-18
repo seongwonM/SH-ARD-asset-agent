@@ -17,7 +17,9 @@ Use a data-friendly ontology rather than forcing every 5W1H slot:
 3. Use composite-key candidates and hierarchy evidence.
 4. Do not assume a single primary target.
 5. Preserve uncertainty explicitly.
-6. Produce a concise Korean description suitable for Asset Context retrieval.
+6. Write all free-text values (`row_grain.description`, `entities[].role`, `table_scope`, `asset_context`,
+   `uncertainties`) in Korean (한국어). `asset_context` specifically must be a concise Korean description suitable
+   for Asset Context retrieval.
 7. If `semantic_validation.checks` (or `revision_feedback.checks`) still contains `warning`/`fail` entries, reflect
    each one in `uncertainties` by name — state which columns and what concrete contradiction remains (e.g. "genre_dan
    최대값이 0.01로 다른 genre_* 컬럼과 스케일이 달라 동일 기준 확률로 보기 어려움"), not a generic sentence like
