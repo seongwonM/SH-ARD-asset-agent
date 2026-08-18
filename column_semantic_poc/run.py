@@ -6,6 +6,7 @@ CSV Schema Semantics PoC
 ========================
 Folder structure:
     run.py
+    csv_repair.py
     skills/
         planner.md
         semantic_type.md
@@ -27,7 +28,7 @@ Run:
     python run.py ./data.csv
 
 Optional:
-    python run.py ./data.csv --output result.json --max-analysis-rows 50000 --max-rounds 2
+    python run.py ./data.csv --output result.json --max-analysis-rows 10000 --max-rounds 2
 """
 
 from __future__ import annotations
@@ -44,6 +45,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+from csv_repair import CsvRepairError, repair_ragged_csv
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -120,6 +123,13 @@ def read_csv_safely(path: Path) -> pd.DataFrame:
     for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
         try:
             return pd.read_csv(path, encoding=enc, low_memory=False)
+        except pd.errors.ParserError as e:
+            # 값 안에 이스케이프 안 된 ","가 섞여 필드 수가 헤더보다 많아진
+            # 경우일 수 있다 - 인코딩을 바꿔봐야 소용없으니 복구를 시도한다.
+            try:
+                return repair_ragged_csv(path, encoding=enc)
+            except CsvRepairError as repair_error:
+                errors.append(f"{enc}: {e} (복구 시도 실패: {repair_error})")
         except Exception as e:
             errors.append(f"{enc}: {e}")
     raise RuntimeError("CSV를 읽지 못했습니다.\n" + "\n".join(errors))
@@ -835,7 +845,7 @@ class SkillRunner:
 def run_pipeline(
     csv_path: Path,
     skill_dir: Path,
-    max_analysis_rows: int = 50000,
+    max_analysis_rows: int = 10000,
     max_rounds: int = 2,
 ) -> Dict[str, Any]:
     raw_df = read_csv_safely(csv_path)
@@ -968,7 +978,7 @@ def main() -> None:
     parser.add_argument(
         "--max-analysis-rows",
         type=int,
-        default=50000,
+        default=10000,
         help="프로파일링에 사용할 최대 행 수",
     )
     parser.add_argument(

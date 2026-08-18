@@ -65,8 +65,8 @@ spec:
               OUT_DIR=/data/robustness_test_results
               mkdir -p "$OUT_DIR"
 
-              if [ ! -f "$SRC_DIR/run.py" ]; then
-                echo "[ERROR] $SRC_DIR/run.py 가 없습니다. 먼저 PVC에 column_semantic_poc를 kubectl cp 하세요." >&2
+              if [ ! -f "$SRC_DIR/run.py" ] || [ ! -f "$SRC_DIR/csv_repair.py" ]; then
+                echo "[ERROR] $SRC_DIR/run.py 또는 csv_repair.py가 없습니다. 먼저 PVC에 column_semantic_poc를 kubectl cp 하세요." >&2
                 exit 1
               fi
 

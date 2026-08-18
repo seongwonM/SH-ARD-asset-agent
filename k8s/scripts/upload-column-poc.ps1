@@ -50,6 +50,9 @@ if (-not (Test-Path $LocalDir)) {
 if (-not (Test-Path (Join-Path $LocalDir "run.py"))) {
     throw "$LocalDir/run.py 가 없습니다. -LocalDir로 column_semantic_poc 경로를 지정하세요."
 }
+if (-not (Test-Path (Join-Path $LocalDir "csv_repair.py"))) {
+    throw "$LocalDir/csv_repair.py 가 없습니다. run.py가 import하는 필수 파일입니다."
+}
 
 if ($Namespace) {
     Write-Host "네임스페이스 '$Namespace' 확인/생성..."
@@ -81,4 +84,8 @@ kubectl exec @nsArgs $PodName -- test -f "$remoteDir/run.py"
 if ($LASTEXITCODE -ne 0) {
     throw "$remoteDir/run.py 확인 실패 - 업로드가 제대로 되지 않았습니다."
 }
-Write-Host "run.py 확인됨. 이제 kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행할 수 있습니다."
+kubectl exec @nsArgs $PodName -- test -f "$remoteDir/csv_repair.py"
+if ($LASTEXITCODE -ne 0) {
+    throw "$remoteDir/csv_repair.py 확인 실패 - 업로드가 제대로 되지 않았습니다."
+}
+Write-Host "run.py / csv_repair.py 확인됨. 이제 kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행할 수 있습니다."
