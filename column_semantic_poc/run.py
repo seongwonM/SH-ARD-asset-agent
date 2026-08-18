@@ -29,6 +29,11 @@ Run:
 
 Optional:
     python run.py ./data.csv --output result.json --max-analysis-rows 10000 --max-rounds 2
+
+Skill 하나가 끝날 때마다 <output>.partial.json에 그때까지의 plans/evidence/results를
+체크포인트로 남긴다. 파이프라인이 끝까지 성공하면 <output>에 최종 결과가 쓰이고
+partial 파일은 지워진다 - 중간에 실패해도 partial 파일에 그때까지 계산된
+skill 출력이 남아있다.
 """
 
 from __future__ import annotations
@@ -864,6 +869,7 @@ def run_pipeline(
     skill_dir: Path,
     max_analysis_rows: int = 10000,
     max_rounds: int = 2,
+    checkpoint_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     raw_df = read_csv_safely(csv_path)
 
@@ -892,6 +898,28 @@ def run_pipeline(
     results: Dict[str, Any] = {}
     plans: List[Dict[str, Any]] = []
 
+    def build_result(status: str) -> Dict[str, Any]:
+        return clean_for_json({
+            "meta": {
+                "source_csv": str(csv_path),
+                "skills_dir": str(skill_dir),
+                "llm_model": model,
+                "max_rounds": max_rounds,
+                "status": status,
+            },
+            "plans": plans,
+            "evidence": evidence,
+            "results": results,
+        })
+
+    def save_checkpoint() -> None:
+        if checkpoint_path is None:
+            return
+        checkpoint_path.write_text(
+            json.dumps(build_result("in_progress"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     # First pass -------------------------------------------------------
     plan = runner.plan(evidence)
     plans.append(plan)
@@ -912,6 +940,7 @@ def run_pipeline(
             results[skill] = apply_probes(df, results[skill])
             print(f"[PROBE] semantic_validation 검증 완료 ({time.time() - probe_started:.1f}초)", flush=True)
         print(f"[EXEC] {skill} 완료 ({time.time() - step_started:.1f}초)", flush=True)
+        save_checkpoint()
 
     # Revision passes -------------------------------------------------
     for round_idx in range(2, max_rounds + 1):
@@ -962,6 +991,7 @@ def run_pipeline(
                 results[skill] = apply_probes(df, results[skill])
                 print(f"[PROBE] semantic_validation 검증 완료 ({time.time() - probe_started:.1f}초)", flush=True)
             print(f"[RE-EXEC] {skill} 완료 ({time.time() - step_started:.1f}초)", flush=True)
+            save_checkpoint()
 
         # Always regenerate final table context after a revision.
         print("[RE-EXEC] table_context 시작", flush=True)
@@ -973,18 +1003,12 @@ def run_pipeline(
             revision_feedback=feedback,
         )
         print(f"[RE-EXEC] table_context 완료 ({time.time() - tc_started:.1f}초)", flush=True)
+        save_checkpoint()
 
-    return clean_for_json({
-        "meta": {
-            "source_csv": str(csv_path),
-            "skills_dir": str(skill_dir),
-            "llm_model": model,
-            "max_rounds": max_rounds,
-        },
-        "plans": plans,
-        "evidence": evidence,
-        "results": results,
-    })
+    final = build_result("done")
+    if checkpoint_path is not None and checkpoint_path.exists():
+        checkpoint_path.unlink()
+    return final
 
 
 def main() -> None:
@@ -1025,12 +1049,14 @@ def main() -> None:
     output = args.output
     if output is None:
         output = csv_path.with_suffix(csv_path.suffix + ".semantic.json")
+    checkpoint_path = output.with_suffix(output.suffix + ".partial.json")
 
     result = run_pipeline(
         csv_path=csv_path,
         skill_dir=args.skills.resolve(),
         max_analysis_rows=args.max_analysis_rows,
         max_rounds=args.max_rounds,
+        checkpoint_path=checkpoint_path,
     )
 
     output.write_text(

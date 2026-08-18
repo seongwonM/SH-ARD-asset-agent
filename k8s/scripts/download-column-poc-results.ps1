@@ -78,3 +78,9 @@ if ($errorLogs) {
     Write-Host "`n실패한 CSV가 있습니다 (.error.log 참고):"
     $errorLogs | ForEach-Object { Write-Host "  $($_.FullName)" }
 }
+
+$partials = Get-ChildItem -Recurse $LocalDir -Filter "*.partial.json" -ErrorAction SilentlyContinue
+if ($partials) {
+    Write-Host "`n아직 진행 중이거나 중간에 실패한 CSV의 부분 결과(.partial.json)가 있습니다:"
+    $partials | ForEach-Object { Write-Host "  $($_.FullName)" }
+}
