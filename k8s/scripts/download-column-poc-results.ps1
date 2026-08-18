@@ -8,10 +8,11 @@
   /data/robustness_test_results 전체 또는 -Target으로 지정한 파일 하나만
   로컬로 복사한다.
 
-  column-poc-job.yaml(Job: column-poc-batch) 결과: <csv_stem>.semantic.json
-  여러 개. CSV마다 <csv_stem>.log에 run.py 전체 출력(성공/실패 모두, 맨 아래에
+  column-poc-job.yaml(Job: column-poc-batch) 결과: <csv_stem>_<KST타임스탬프>.semantic.json
+  여러 개(같은 CSV를 여러 번 돌려도 타임스탬프가 달라 서로 덮어쓰지 않는다).
+  CSV마다 <csv_stem>_<타임스탬프>.log에 run.py 전체 출력(성공/실패 모두, 맨 아래에
   최종/partial 결과 포함)이 항상 같이 남아있으니 같이 받힌다. 중간에 죽은 CSV는
-  <csv_stem>.semantic.json.partial.json도 남아있다.
+  <csv_stem>_<타임스탬프>.semantic.json.partial.json도 남아있다.
 
 .PARAMETER LocalDir
   결과를 받을 로컬 디렉터리. 없으면 생성한다.
@@ -30,7 +31,7 @@
 
 .EXAMPLE
   ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
-  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target my_asset.semantic.json
+  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target my_asset_20260818_140500.semantic.json
 #>
 param(
     [string]$LocalDir = "results",

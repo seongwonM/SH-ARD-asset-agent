@@ -46,7 +46,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -91,8 +91,14 @@ REQUIRED_FIRST_PASS = {"semantic_type", "column_interpretation", "semantic_valid
 # Utilities
 # ---------------------------------------------------------------------
 
+KST = timezone(timedelta(hours=9))
+
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """KST(UTC+9, 고정 오프셋) 타임스탬프. zoneinfo/tzdata에 기대지 않는다 -
+    슬림 컨테이너 이미지에는 시간대 DB가 없는 경우가 많아 "Asia/Seoul" 같은
+    이름 기반 시간대는 조용히 무시되거나(플랫폼에 따라 다름) 에러가 날 수 있다."""
+    return datetime.now(KST).isoformat(timespec="seconds")
 
 
 def json_safe(v: Any) -> Any:

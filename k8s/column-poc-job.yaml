@@ -16,24 +16,28 @@
 # 결과 내려받기 (완료 후):
 #   ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
 #
-# 결과: /data/robustness_test_results/<csv_stem>.semantic.json 로 CSV마다 하나씩 쌓인다.
-# 이미 결과 파일이 있는 CSV는 건너뛴다 — Job이 재시작(backoffLimit)되거나 다시
-# apply해도 처음부터 다시 돌지 않는다. 특정 CSV가 실패해도(파싱/LLM 오류 등)
-# 나머지는 계속 돌고, 실패 목록은 마지막에 로그로 남는다.
+# 결과: /data/robustness_test_results/<csv_stem>_<KST타임스탬프>.semantic.json 로
+# CSV마다 하나씩 쌓인다. 타임스탬프(YYYYMMDD_HHMMSS, 한국 시간 UTC+9)를 파일명에
+# 넣는 이유는 나중에 같은 CSV를 다시 돌렸을 때 이전 실행 기록이 같은 이름으로
+# 덮어써지지 않게 하기 위함이다 - 여러 번 돌린 실험을 전부 남겨서 비교할 수 있다.
+# 이미 결과 파일이 있는 CSV(이름 접두사로 glob 매칭)는 건너뛴다 — Job이
+# 재시작(backoffLimit)되거나 다시 apply해도 처음부터 다시 돌지 않는다. 특정
+# CSV가 실패해도(파싱/LLM 오류 등) 나머지는 계속 돌고, 실패 목록은 마지막에
+# 로그로 남는다.
 #
-# CSV마다 <csv_stem>.log에 run.py의 stdout/stderr 전체(각 skill/LLM 호출의 시작·
-# 완료·소요시간)가 성공/실패 관계없이 항상 남는다 - 성공해도 지우지 않는다. 성공하면
-# 로그 맨 아래에 "==== RESULT ====" 구분선과 함께 최종 결과 JSON을 그대로 붙이고,
-# 실패하면 그때까지 쌓인 partial 결과가 있으면 "==== PARTIAL RESULT ===="로 붙인다.
-# Job의 kubectl logs가 ttlSecondsAfterFinished 이후 사라져도 PVC의 이 파일로
-# 무엇을 했는지·왜 실패했는지 다시 확인할 수 있다.
+# CSV마다 <csv_stem>_<타임스탬프>.log에 run.py의 stdout/stderr 전체(각 skill/LLM
+# 호출의 시작·완료·소요시간)가 성공/실패 관계없이 항상 남는다 - 성공해도 지우지
+# 않는다. 성공하면 로그 맨 아래에 "==== RESULT ====" 구분선과 함께 최종 결과
+# JSON을 그대로 붙이고, 실패하면 그때까지 쌓인 partial 결과가 있으면
+# "==== PARTIAL RESULT ===="로 붙인다. Job의 kubectl logs가 ttlSecondsAfterFinished
+# 이후 사라져도 PVC의 이 파일로 무엇을 했는지·왜 실패했는지 다시 확인할 수 있다.
 #
 # run.py는 CSV 하나를 처리하는 도중에도 skill이 끝날 때마다
-# <csv_stem>.semantic.json.partial.json에 그때까지 결과를 체크포인트로 남긴다
-# (성공하면 최종 파일로 대체되고 지워짐) - 중간에 죽어도 그때까지 계산된 skill
-# 출력은 partial 파일에 남는다. 최종 결과 JSON에는 meta.started_at/finished_at과
-# timeline(각 skill/LLM 호출/probe의 시작·종료 타임스탬프)이 들어있어 여러 번
-# 실행한 기록을 시간순으로 비교할 수 있다.
+# <출력파일명>.partial.json에 그때까지 결과를 체크포인트로 남긴다(성공하면 최종
+# 파일로 대체되고 지워짐) - 중간에 죽어도 그때까지 계산된 skill 출력은 partial
+# 파일에 남는다. 최종 결과 JSON에는 meta.started_at/finished_at(모두 KST)과
+# timeline(각 skill/LLM 호출/probe의 시작·종료 타임스탬프, 역시 KST)이 들어있어
+# 여러 번 실행한 기록을 시간순으로 비교할 수 있다.
 #
 # CSV가 여러 개일 때는 이미 끝난 CSV의 .semantic.json은 Job이 다음 CSV를
 # 처리하는 동안에도 바로 내려받을 수 있다 - 전체 Job이 끝나길 기다릴 필요 없다.
@@ -94,18 +98,22 @@ spec:
               for csv in "$DATA_DIR"/*.csv; do
                 total=$((total + 1))
                 name=$(basename "${csv%.csv}")
-                out="$OUT_DIR/${name}.semantic.json"
 
-                if [ -f "$out" ]; then
+                if compgen -G "$OUT_DIR/${name}_*.semantic.json" > /dev/null; then
                   echo "[SKIP] $name (이미 결과 있음)"
                   skipped=$((skipped + 1))
                   ok=$((ok + 1))
                   continue
                 fi
 
-                echo "[RUN] $name"
-                log_file="$OUT_DIR/${name}.log"
+                # KST(UTC+9) 타임스탬프. 컨테이너에 시간대 DB가 없을 수 있어
+                # "Asia/Seoul" 이름 대신 UTC + 9시간 고정 오프셋을 계산한다.
+                ts=$(date -u -d '+9 hours' +%Y%m%d_%H%M%S)
+                out="$OUT_DIR/${name}_${ts}.semantic.json"
+                log_file="$OUT_DIR/${name}_${ts}.log"
                 partial="${out}.partial.json"
+
+                echo "[RUN] $name (KST $ts)"
                 rm -f "$log_file"
                 if python "$SRC_DIR/run.py" "$csv" \
                     --skills "$SRC_DIR/skills" \
@@ -133,7 +141,7 @@ spec:
               echo "==== 완료: ${total}개 중 ${ok}개 성공 (스킵 ${skipped}개 포함) ===="
               if [ -n "$failed" ]; then
                 echo "[FAILED LIST]$failed"
-                echo "[FAILED LOGS] 각 파일의 전체 로그(실패면 마지막에 partial 결과 포함)는 /data/robustness_test_results/<name>.log 에 남아있다."
+                echo "[FAILED LOGS] 각 파일의 전체 로그(실패면 마지막에 partial 결과 포함)는 /data/robustness_test_results/<name>_<KST타임스탬프>.log 에 남아있다."
                 exit 1
               fi
           envFrom:
