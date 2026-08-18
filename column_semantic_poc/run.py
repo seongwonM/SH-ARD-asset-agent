@@ -40,6 +40,7 @@ import math
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -646,8 +647,10 @@ def llm_json(
     system_prompt: str,
     payload: Dict[str, Any],
     max_retries: int = 1,
+    label: str = "",
 ) -> Dict[str, Any]:
     user_text = json.dumps(clean_for_json(payload), ensure_ascii=False, indent=2)
+    tag = f"[LLM:{label}]" if label else "[LLM]"
 
     last_error = None
     for attempt in range(max_retries + 1):
@@ -667,15 +670,27 @@ def llm_json(
                 "content": "이전 응답은 JSON 파싱에 실패했습니다. 설명/마크다운 없이 유효한 JSON만 반환하세요."
             })
 
+        print(
+            f"{tag} 요청 전송 (시도 {attempt + 1}/{max_retries + 1}, "
+            f"model={model}, 입력 {len(user_text):,}자)",
+            flush=True,
+        )
+        started = time.time()
         try:
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
             )
             text = resp.choices[0].message.content or ""
+            elapsed = time.time() - started
+            usage = getattr(resp, "usage", None)
+            tokens = f", 토큰 {usage.total_tokens}" if usage else ""
+            print(f"{tag} 응답 수신 ({elapsed:.1f}초, 출력 {len(text):,}자{tokens})", flush=True)
             return parse_json_text(text)
         except Exception as e:
+            elapsed = time.time() - started
             last_error = e
+            print(f"{tag} 실패 ({elapsed:.1f}초): {type(e).__name__}: {e}", flush=True)
 
     raise RuntimeError(f"LLM 호출 실패: {last_error}")
 
@@ -728,6 +743,7 @@ class SkillRunner:
             self.model,
             self.skills["planner"],
             payload,
+            label="replan" if replan else "planner",
         )
         return self._sanitize_plan(plan, replan=replan)
 
@@ -839,6 +855,7 @@ class SkillRunner:
             self.model,
             self.skills[skill_name],
             payload,
+            label=skill_name,
         )
 
 
@@ -857,11 +874,13 @@ def run_pipeline(
         df = raw_df.copy()
         sampled = False
 
-    print(f"[LOAD] {csv_path.name}: {len(raw_df):,} rows x {len(raw_df.columns)} cols")
+    print(f"[LOAD] {csv_path.name}: {len(raw_df):,} rows x {len(raw_df.columns)} cols", flush=True)
     if sampled:
-        print(f"[PROFILE] 분석 비용 제한으로 {len(df):,}개 행 샘플 사용")
+        print(f"[PROFILE] 분석 비용 제한으로 {len(df):,}개 행 샘플 사용", flush=True)
 
+    profile_started = time.time()
     evidence = build_table_evidence(df)
+    print(f"[PROFILE] 완료 ({time.time() - profile_started:.1f}초)", flush=True)
     evidence["table"]["source_file"] = csv_path.name
     evidence["table"]["original_row_count"] = int(len(raw_df))
     evidence["table"]["analysis_sampled"] = sampled
@@ -876,11 +895,12 @@ def run_pipeline(
     # First pass -------------------------------------------------------
     plan = runner.plan(evidence)
     plans.append(plan)
-    print("[PLAN 1]", " -> ".join(step["skill"] for step in plan["steps"]))
+    print("[PLAN 1]", " -> ".join(step["skill"] for step in plan["steps"]), flush=True)
 
     for step in plan["steps"]:
         skill = step["skill"]
-        print(f"[EXEC] {skill}")
+        print(f"[EXEC] {skill} 시작", flush=True)
+        step_started = time.time()
         results[skill] = runner.execute_skill(
             skill,
             evidence,
@@ -888,7 +908,10 @@ def run_pipeline(
             focus=step.get("focus", []),
         )
         if skill == "semantic_validation":
+            probe_started = time.time()
             results[skill] = apply_probes(df, results[skill])
+            print(f"[PROBE] semantic_validation 검증 완료 ({time.time() - probe_started:.1f}초)", flush=True)
+        print(f"[EXEC] {skill} 완료 ({time.time() - step_started:.1f}초)", flush=True)
 
     # Revision passes -------------------------------------------------
     for round_idx in range(2, max_rounds + 1):
@@ -921,11 +944,12 @@ def run_pipeline(
         skills_to_run.sort(key=lambda x: SKILL_ORDER.index(x["skill"]))
 
         plans.append({"reason": replan.get("reason", ""), "steps": skills_to_run})
-        print(f"[PLAN {round_idx}]", " -> ".join(step["skill"] for step in skills_to_run))
+        print(f"[PLAN {round_idx}]", " -> ".join(step["skill"] for step in skills_to_run), flush=True)
 
         for step in skills_to_run:
             skill = step["skill"]
-            print(f"[RE-EXEC] {skill}")
+            print(f"[RE-EXEC] {skill} 시작", flush=True)
+            step_started = time.time()
             results[skill] = runner.execute_skill(
                 skill,
                 evidence,
@@ -934,16 +958,21 @@ def run_pipeline(
                 revision_feedback=feedback,
             )
             if skill == "semantic_validation":
+                probe_started = time.time()
                 results[skill] = apply_probes(df, results[skill])
+                print(f"[PROBE] semantic_validation 검증 완료 ({time.time() - probe_started:.1f}초)", flush=True)
+            print(f"[RE-EXEC] {skill} 완료 ({time.time() - step_started:.1f}초)", flush=True)
 
         # Always regenerate final table context after a revision.
-        print("[RE-EXEC] table_context")
+        print("[RE-EXEC] table_context 시작", flush=True)
+        tc_started = time.time()
         results["table_context"] = runner.execute_skill(
             "table_context",
             evidence,
             results,
             revision_feedback=feedback,
         )
+        print(f"[RE-EXEC] table_context 완료 ({time.time() - tc_started:.1f}초)", flush=True)
 
     return clean_for_json({
         "meta": {
