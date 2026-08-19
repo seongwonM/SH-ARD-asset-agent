@@ -1,102 +1,84 @@
-"""
-probe 단위 테스트.
-
-probe는 에이전트 검증의 최종 심판이므로, probe 자체가 틀리면
-모든 검증이 무의미해진다. 통과/반증 양쪽을 다 확인한다.
-"""
+"""probe는 반증 도구다. 통과가 참을 증명하지 않고, 실패가 거짓을 증명한다.
+그리고 **실행 실패는 반증이 아니다** - 평가할 수 없으면 check를 건드리지 않는다."""
 
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from agent.probes import ProbeKind, ProbeRequest, run_probe
+from column_semantics.core.probes import ProbeExpressionError, apply_probes, eval_probe_expression, run_probe
 
-DF = pd.DataFrame(
-    {
-        "pk": ["a", "b", "c", "d"],
-        "fk": ["X", "X", "Y", "X"],
-        "day_only": ["2026-07-07", "2026-07-09", "2026-07-10", "2026-07-13"],
-        "with_time": ["2026-07-07 09:30:00", "2026-07-09 14:05:00", "2026-07-10 08:00:00",
-                      "2026-07-13 22:45:00"],
-        "num": [1.5, 2.5, 3.5, 4.5],
-        "cat": ["정상", "이상", "이상", "정상"],
-        "line": ["L1", "L1", "L2", "L1"],
+
+def test_expression_evaluator_rejects_arbitrary_code():
+    with pytest.raises(ProbeExpressionError):
+        eval_probe_expression("__import__('os').system('ls')", {})
+    with pytest.raises(ProbeExpressionError):
+        eval_probe_expression("unknown_col + 1", {})
+
+
+def test_probe_measures_comparison_ratio(equipment_df):
+    observed = run_probe(
+        equipment_df,
+        {"expression": "v <= lim", "columns": {"v": "power_value", "lim": "power_limit"}},
+    )
+    assert observed["n"] == 12
+    assert 0 < observed["true_ratio"] < 1  # 일부러 초과값을 넣은 표본
+
+
+def test_probe_returns_none_when_column_missing(equipment_df):
+    assert run_probe(equipment_df, {"expression": "a + b", "columns": {"a": "nope", "b": "power_value"}}) is None
+
+
+def test_probe_returns_none_on_bad_expression(equipment_df):
+    assert run_probe(equipment_df, {"expression": "v <=", "columns": {"v": "power_value"}}) is None
+
+
+def test_probe_refutes_llm_claim(equipment_df):
+    """LLM이 pass라고 써도 실측이 어긋나면 fail로 내려가야 한다."""
+    validation = {
+        "overall_status": "pass",
+        "checks": [
+            {
+                "hypothesis": "power_value는 항상 power_limit 이하다",
+                "status": "pass",
+                "probe": {
+                    "expression": "v <= lim",
+                    "columns": {"v": "power_value", "lim": "power_limit"},
+                },
+            }
+        ],
     }
-)
+    out = apply_probes(equipment_df, validation)
+    check = out["checks"][0]
+    assert check["status"] == "fail"
+    assert check["probe_verified"] is True
+    # 실측값이 남아야 재시도 힌트로 쓸 수 있다.
+    assert check["observed"]["true_ratio"] < 0.95
+    assert out["overall_status"] == "needs_revision"
 
 
-def probe(kind, columns, **params):
-    return run_probe(ProbeRequest(kind=kind, columns=columns, params=params), DF)
+def test_probe_failure_to_run_leaves_claim_untouched(equipment_df):
+    validation = {
+        "overall_status": "pass",
+        "checks": [
+            {
+                "hypothesis": "검사할 수 없는 주장",
+                "status": "pass",
+                "probe": {"expression": "v <= lim", "columns": {"v": "power_value", "lim": "없는컬럼"}},
+            }
+        ],
+    }
+    out = apply_probes(equipment_df, validation)
+    check = out["checks"][0]
+    assert check["status"] == "pass"
+    assert "probe_verified" not in check
+    assert out["overall_status"] == "pass"
 
 
-# --- uniqueness -------------------------------------------------------------
-
-
-def test_uniqueness_passes_for_pk():
-    r = probe(ProbeKind.UNIQUENESS, ["pk"], min_ratio=0.99)
-    assert r.passed and r.observed == 1.0
-
-
-def test_uniqueness_refutes_fk_as_pk():
-    r = probe(ProbeKind.UNIQUENESS, ["fk"], min_ratio=0.99)
-    assert not r.passed
-    assert "0.5" in r.detail  # 실측값이 힌트에 포함되어야 재시도가 교정된다
-    assert "중복 예시" in r.detail
-
-
-def test_composite_uniqueness():
-    assert probe(ProbeKind.UNIQUENESS, ["fk", "pk"], min_ratio=0.99).passed
-    assert not probe(ProbeKind.UNIQUENESS, ["fk", "line"], min_ratio=0.99).passed
-
-
-# --- time component ---------------------------------------------------------
-
-
-def test_time_component_refutes_hour_on_date_only():
-    r = probe(ProbeKind.TIME_COMPONENT, ["day_only"], resolution="Hour")
-    assert not r.passed and r.observed == "Day"
-
-
-def test_time_component_allows_coarser_claim():
-    """실제가 Minute이면 Day 주장은 허용된다(더 거친 단위는 항상 안전)."""
-    assert probe(ProbeKind.TIME_COMPONENT, ["with_time"], resolution="Day").passed
-    assert probe(ProbeKind.TIME_COMPONENT, ["with_time"], resolution="Minute").passed
-    assert not probe(ProbeKind.TIME_COMPONENT, ["with_time"], resolution="Second").passed
-
-
-# --- category values --------------------------------------------------------
-
-
-def test_value_in_set_refutes_hallucinated_category():
-    r = probe(ProbeKind.VALUE_IN_SET, ["cat"], values=["정상", "이상", "보류"])
-    assert not r.passed and "보류" in str(r.observed)
-
-
-def test_set_covers_column_detects_omission():
-    r = probe(ProbeKind.SET_COVERS_COLUMN, ["cat"], values=["정상"])
-    assert not r.passed and "이상" in str(r.observed)
-
-
-# --- misc -------------------------------------------------------------------
-
-
-def test_numeric_range():
-    assert probe(ProbeKind.NUMERIC_RANGE, ["num"], min=1.5, max=4.5).passed
-    assert not probe(ProbeKind.NUMERIC_RANGE, ["num"], min=0, max=10).passed
-
-
-def test_functional_dep():
-    assert probe(ProbeKind.FUNCTIONAL_DEP, ["fk", "line"]).passed is False or True
-    r = probe(ProbeKind.FUNCTIONAL_DEP, ["pk", "fk"])
-    assert r.passed  # pk가 유일하므로 어떤 컬럼에도 함수 종속
-
-
-def test_missing_column_is_reported_not_crashed():
-    r = probe(ProbeKind.UNIQUENESS, ["없는컬럼"], min_ratio=0.99)
-    assert not r.passed and "존재하지 않는 컬럼" in r.detail
-
-
-def test_probe_error_does_not_claim_refutation():
-    """probe 실행 실패는 error로 남고 passed=False로 오해되지 않아야 한다."""
-    r = run_probe(ProbeRequest(kind=ProbeKind.REGEX_MATCH, columns=["cat"], params={"pattern": "["}), DF)
-    assert r.error, "잘못된 정규식이 error가 아닌 반증으로 처리됨"
+def test_tolerance_probe_reports_target_and_ratio():
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [2.0, 4.0, 6.0]})
+    observed = run_probe(
+        df, {"expression": "b / a", "columns": {"a": "a", "b": "b"}, "target": 2.0, "tolerance": 0.01}
+    )
+    assert observed["within_tolerance_ratio"] == 1.0
+    assert observed["target"] == 2.0

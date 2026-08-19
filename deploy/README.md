@@ -30,5 +30,10 @@ docker build -f deploy/Dockerfile \
   -t ghcr.io/seongwonm/sh-ard-asset-agent:local .
 
 docker run --rm ghcr.io/seongwonm/sh-ard-asset-agent:local \
-  python -c "from agent.compat import TableAssetContextBuilder; print('ok')"
+  python run.py --help
+
+# skills/*.md가 실제로 이미지에 들어갔는지 확인 - .dockerignore가 루트 문서만
+# 제외하도록 되어 있는데, 이 규칙이 넓어지면 프롬프트가 통째로 빠진다.
+docker run --rm ghcr.io/seongwonm/sh-ard-asset-agent:local \
+  python -c "import pathlib; print(sorted(p.name for p in pathlib.Path('skills').glob('*.md')))"
 ```

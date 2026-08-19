@@ -1,24 +1,26 @@
-# 강건성 테스트 전용 Job.
+# 강건성 실험 전용 Job. 같은 CSV를 여러 번 돌려 결과가 얼마나 흔들리는지 본다.
 #
 # 왜 Pod exec가 아니라 Job인가
-#   기존 run-robustness-test.ps1은 `kubectl exec`로 배치를 돌린다.
-#   1440회 실행은 몇 시간이 걸리는데, exec는 로컬 kubectl 세션에 묶여 있어
-#   노트북을 닫거나 VPN이 끊기면 프로세스가 같이 죽는다.
-#   Job은 클러스터가 소유하므로 세션과 무관하게 끝까지 돈다.
-#
-#   기존 스크립트도 계속 쓸 수 있다(-FetchOnly로 중간 결과만 받는 용도).
-#   이 Job은 그 대안이지 대체가 아니다.
+#   exec는 로컬 kubectl 세션에 묶여 있어 노트북을 닫거나 VPN이 끊기면 프로세스가
+#   같이 죽는다. 수백 회 반복은 몇 시간이 걸리므로 클러스터가 소유하는 Job으로
+#   돌린다.
 #
 # 이어달리기
 #   결과는 PVC의 /data/robustness_results.jsonl에 한 줄씩 append되고,
-#   run_robustness_test.py가 (dataset, with_column_descriptions, model, rep)
-#   조합을 보고 이미 끝난 것은 건너뛴다. 따라서 Job이 죽어도 다시 apply하면
-#   남은 조합부터 이어서 돈다. backoffLimit을 2로 둔 이유가 이것이다.
+#   experiments/run_robustness.py가 (dataset, model, rep) 조합을 보고 이미 끝난
+#   것은 건너뛴다. 따라서 Job이 죽어도 다시 apply하면 남은 조합부터 이어서 돈다.
+#   backoffLimit을 2로 둔 이유가 이것이다.
 #
 #   실행:  kubectl apply -f k8s/robustness-job.yaml
 #   로그:  kubectl logs -f job/sh-ard-robustness
 #   결과:  kubectl cp <pod>:/data/robustness_results.jsonl ./results/
 #   재실행: kubectl delete job sh-ard-robustness && kubectl apply -f k8s/robustness-job.yaml
+#
+# CSV 전체를 한 번씩만 돌려 결과 JSON을 보려면 이 Job이 아니라
+# k8s/column-poc-job.yaml을 쓴다(폴더 구조로 결과를 남긴다).
+#
+# 이미지 태그는 .github/workflows/build-push.yml이 커밋 SHA로 자동 갱신한다.
+# 수동으로 건드리지 말 것.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -40,7 +42,7 @@ spec:
           imagePullPolicy: Always
           command:
             - python
-            - examples/run_robustness_test.py
+            - experiments/run_robustness.py
             - --data-dir=/data/robustness_test
             - --output=/data/robustness_results.jsonl
             - --reps=20
@@ -48,12 +50,12 @@ spec:
             - secretRef:
                 name: sh-ard-asset-agent-secret
           env:
-            - name: LLM_STRUCTURED_MODE
-              value: "guided_json"
-            - name: AGENT_MAX_BATCH
-              value: "8"
-            - name: PYTHONPATH
-              value: "/app:/app/src"
+            # 컬럼별/그룹별 병렬 호출의 상한. Gateway RPM과 같이 봐야 한다 -
+            # RPM=360이면 초당 6건이고, 응답 지연 2초 가정 시 동시 12건이 상한이다.
+            - name: LLM_REQUESTS_PER_MINUTE
+              value: "360"
+            - name: LLM_MAX_CONCURRENCY
+              value: "12"
           volumeMounts:
             - name: data
               mountPath: /data

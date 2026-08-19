@@ -1,20 +1,25 @@
 ﻿<#
 .SYNOPSIS
-  column_semantic_poc 코드를 PVC(/data/column_semantic_poc)로 업로드한다.
+  로컬 코드(run.py / src / skills)를 PVC(/data/column_semantic_poc)로 업로드한다.
 
 .DESCRIPTION
-  column_semantic_poc는 deploy/Dockerfile에 COPY되어 있지 않아 GHCR 이미지
-  안에 없다. k8s/column-poc-job.yaml(Job: column-poc-batch)이 이 코드를
-  /data/column_semantic_poc에서 찾으므로, Job을 돌리기 전에 최초 1회
-  (그리고 로컬에서 run.py/skills를 고칠 때마다) 이 스크립트로 PVC에 올려야 한다.
-  지금까지는 이 kubectl cp 단계가 문서(주석)로만 있고 실행이 누락되기 쉬웠다.
+  평소에는 이 스크립트가 필요 없다. k8s/column-poc-job.yaml은 기본적으로
+  이미지 안의 /app 코드를 쓰고, 이미지는 push할 때마다 CI가 자동으로 굽는다.
+
+  이 스크립트는 **이미지를 다시 굽지 않고** 코드를 바꿔 돌려보고 싶을 때만 쓴다
+  (폐쇄망에서 빌드 파이프라인을 기다리기 어려운 경우). Job은 PVC에 run.py가
+  있으면 이미지 대신 그쪽을 쓰므로, 실험이 끝나면 반드시 정리해야 한다:
+
+      kubectl exec sh-ard-asset-agent -- rm -rf /data/column_semantic_poc
+
+  정리하지 않으면 PVC에 남은 낡은 코드가 이후 모든 Job에서 조용히 계속 쓰인다.
 
   PVC는 클러스터 내부 Pod에서만 마운트되므로, 로컬 kubectl로는 직접 쓸 수
   없다. k8s/pod.yaml의 디버그 Pod(sleep infinity)가 없으면 띄우고, 그 Pod를
-  경유해 kubectl cp로 column_semantic_poc/ 디렉터리 전체를 넣는다.
+  경유해 kubectl cp로 넣는다.
 
 .PARAMETER LocalDir
-  업로드할 로컬 디렉터리. 기본은 레포 루트의 column_semantic_poc.
+  업로드할 로컬 레포 루트. 기본은 현재 디렉터리.
 
 .PARAMETER PodName
   파일을 경유해 넣을 디버그 Pod 이름. k8s/pod.yaml의 metadata.name과 맞춘다.
@@ -28,7 +33,7 @@
   ./k8s/scripts/upload-column-poc.ps1
 #>
 param(
-    [string]$LocalDir = "column_semantic_poc",
+    [string]$LocalDir = ".",
 
     [string]$PodYaml = "k8s/pod.yaml",
 
@@ -44,14 +49,13 @@ $envVars = Read-DotEnv ".env"
 $Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
 $nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
 
-if (-not (Test-Path $LocalDir)) {
-    throw "$LocalDir 가 없습니다. 레포 루트에서 실행했는지 확인하세요."
-}
-if (-not (Test-Path (Join-Path $LocalDir "run.py"))) {
-    throw "$LocalDir/run.py 가 없습니다. -LocalDir로 column_semantic_poc 경로를 지정하세요."
-}
-if (-not (Test-Path (Join-Path $LocalDir "csv_repair.py"))) {
-    throw "$LocalDir/csv_repair.py 가 없습니다. run.py가 import하는 필수 파일입니다."
+# run.py(진입점) / src(구현) / skills(프롬프트)가 한 세트다. 셋 중 하나만 낡아도
+# 원인을 알기 어려운 실패가 나므로 항상 셋을 같이 올린다.
+$required = @("run.py", "src", "skills")
+foreach ($item in $required) {
+    if (-not (Test-Path (Join-Path $LocalDir $item))) {
+        throw "$LocalDir/$item 가 없습니다. 레포 루트에서 실행했는지 확인하세요(-LocalDir로 지정 가능)."
+    }
 }
 
 if ($Namespace) {
@@ -75,17 +79,20 @@ Write-Host "기존 $remoteDir 정리..."
 kubectl exec @nsArgs $PodName -- rm -rf $remoteDir
 kubectl exec @nsArgs $PodName -- mkdir -p $remoteDir
 
-Write-Host "$LocalDir -> ${PodName}:${remoteDir}"
-kubectl cp @nsArgs $LocalDir/. "${PodName}:${remoteDir}"
+foreach ($item in $required) {
+    $source = Join-Path $LocalDir $item
+    Write-Host "$source -> ${PodName}:${remoteDir}/$item"
+    kubectl cp @nsArgs $source "${PodName}:${remoteDir}/$item"
+}
 
 Write-Host "`n업로드 완료. 확인:"
 kubectl exec @nsArgs $PodName -- ls -la $remoteDir
-kubectl exec @nsArgs $PodName -- test -f "$remoteDir/run.py"
-if ($LASTEXITCODE -ne 0) {
-    throw "$remoteDir/run.py 확인 실패 - 업로드가 제대로 되지 않았습니다."
+foreach ($item in $required) {
+    kubectl exec @nsArgs $PodName -- test -e "$remoteDir/$item"
+    if ($LASTEXITCODE -ne 0) {
+        throw "$remoteDir/$item 확인 실패 - 업로드가 제대로 되지 않았습니다."
+    }
 }
-kubectl exec @nsArgs $PodName -- test -f "$remoteDir/csv_repair.py"
-if ($LASTEXITCODE -ne 0) {
-    throw "$remoteDir/csv_repair.py 확인 실패 - 업로드가 제대로 되지 않았습니다."
-}
-Write-Host "run.py / csv_repair.py 확인됨. 이제 kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행할 수 있습니다."
+Write-Host "run.py / src / skills 확인됨. kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행하면"
+Write-Host "이미지 코드 대신 이 PVC 코드가 쓰인다. 실험이 끝나면 다음으로 되돌릴 것:"
+Write-Host "  kubectl exec $PodName -- rm -rf $remoteDir"

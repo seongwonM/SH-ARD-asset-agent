@@ -1,30 +1,38 @@
 ---
-description: 새 skill을 스캐폴딩하고 계약에 맞게 검증한다
-argument-hint: <skill-name> [담당할 컬럼 종류나 작업]
+description: 새 skill(프롬프트)을 추가하고 파이프라인에 연결한다
+argument-hint: <skill-name> [무엇을 판단하는 skill인가]
 ---
 
 `$1` skill을 추가한다. 대상: $2
 
+skill은 코드가 아니라 프롬프트다. 파일 하나(`skills/<name>.md`)가 skill 하나이고,
+그 내용이 그대로 LLM system 프롬프트가 된다. 등록 절차는 없다 — 폴더를 읽는다.
+
 ## 절차
 
-1. `skills/_template/`을 `skills/<snake_name>/`으로 복사한다.
-2. `SKILL.md` frontmatter를 채운다.
-   - `description`은 플래너가 보는 유일한 설명이다. "무엇을 하는가"가 아니라
-     **"어떤 상황에서 이 skill을 골라야 하는가"**를 쓴다.
-   - `requires`/`provides`로만 실행 순서를 표현한다. 코드로 순서를 고정하지 않는다.
-   - `applies_when`은 결정론적 조건만 쓴다.
-3. 본문에 **금지 항목**을 구체적으로 나열한다. 이 skill이 근거 없이 만들어내기
-   쉬운 것이 무엇인지 생각해서 적는다.
-4. `handler.py`를 작성한다.
-   - Pydantic 모델: `Optional`/`Union` 금지, 라벨은 `Literal`, `extra="forbid"`
-   - 데이터로 확인 가능한 주장을 하면 **반드시 `VerifiableClaim`에 probe를 첨부**한다.
-     handler 안 if문으로 검사하지 말 것 — probe로 선언하면 실측값이 재시도 힌트가 된다.
-   - 프롬프트를 만들기 전에 `deps.probe()`로 사실을 먼저 확인해 LLM에 제공한다.
-5. `tests/fixtures.py`의 `MockDeps.structured()`에 새 출력 모델 분기를 추가한다.
-6. `make test`로 검증한다. 기존 테스트가 깨지면 계약을 어긴 것이다.
+1. `skills/$1.md`를 만든다. 기존 skill(`column_interpretation.md`,
+   `semantic_validation.md`)의 형식을 따른다: Role / 입력 설명 / 판단 규칙 /
+   **금지** / 출력 JSON 스키마.
+2. 본문에 **금지 항목**을 구체적으로 적는다. 이 skill이 근거 없이 만들어내기
+   쉬운 것이 무엇인지 생각해서 적는다("표본에 없는 값을 예시로 들지 마라",
+   "단위를 지어내지 마라").
+3. 출력에 **데이터로 확인 가능한 주장**이 있으면 검사식(`probe`)을 같이 내게
+   한다. `{"expression": "v <= lim", "columns": {"v": "...", "lim": "..."}}`
+   형식이고, `core/probes.py`가 실제 DataFrame에 평가한다.
+   프롬프트에 "스스로 검산하라"고 쓰지 말 것 — 그건 검증이 아니다.
+4. `src/column_semantics/pipeline/plan.py`에 언제 도는지 선언한다.
+   - 1차 고정 순서에 넣을 것인가(`SKILL_ORDER` + `first_pass_skills`)
+   - 컬럼별 보충인가(`GAP_SKILLS` — gap_planner가 고른다)
+   - `REQUIRED_SKILLS`에 들어가면 파일이 없을 때 즉시 실패한다
+5. `src/column_semantics/pipeline/skill_runner.py`에 payload 조립을 추가한다.
+   **필요한 것만 넣는다.** 컬럼 단위면 그 컬럼 프로파일만, 그룹 단위면 그 그룹
+   범위로 자른 증거만.
+6. `tests/fakes.py`의 `FakeLLM`에 `_on_<label앞부분>` 응답을 추가하고
+   `make test`로 검증한다.
 
 ## 확인할 것
 
-- `planner.py`, `graph.py`, `executor.py`를 **수정하지 않았는가**
-  (수정해야 동작한다면 `contract.py`를 확장하고 skill은 선언만으로 되게 고친다)
-- 새 probe 종류가 필요하면 `probes.py`에 추가하고 `_DISPATCH`에 등록했는가
+- `core/`를 고치지 않았는가 (skill 추가로 core가 바뀔 일은 없다)
+- payload에 테이블 전체를 통째로 넣지 않았는가
+- 컬럼별 병렬 실행 대상이면 결과가 컬럼별 슬롯에만 쓰이는가
+  (테이블 단위 슬롯에 병렬로 쓰면 마지막 승자가 비결정적이다)

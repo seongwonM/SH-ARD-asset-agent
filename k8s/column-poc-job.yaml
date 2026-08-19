@@ -1,13 +1,16 @@
-# column_semantic_poc를 /data/robustness_test 안의 CSV 전체에 대해 배치로 돌리는 Job.
+# /data/robustness_test 안의 CSV 전체를 배치로 해석하는 Job.
 #
-# run.py는 CSV 한 개씩만 처리하는 구조라(examples/run_robustness_test.py와 달리
-# 자체 배치 루프가 없다), 이 Job의 command에서 셸로 *.csv를 순회하며 하나씩 호출한다.
+# run.py는 CSV 한 개씩만 처리하므로, 이 Job의 command에서 셸로 *.csv를 순회하며
+# 하나씩 호출한다. 셸로 감싸는 이유는 CSV 하나가 실패해도 나머지를 계속 돌리기
+# 위해서다(파이썬 배치 버전은 experiments/run_batch.py에 있다 - 로컬용).
 #
-# column_semantic_poc는 deploy/Dockerfile에 COPY되어 있지 않아 GHCR 이미지 안에
-# 없다. 최초 1회(그리고 로컬에서 run.py/skills를 고칠 때마다), PVC에 코드를
-# 올려둬야 한다 - 이 kubectl cp가 빠지면 아래 Job은 "run.py가 없다"로 바로 실패한다:
-#
-#   ./k8s/scripts/upload-column-poc.ps1
+# 코드 위치
+#   기본은 이미지 안의 /app이다. run.py / src / skills가 deploy/Dockerfile로
+#   COPY되어 있으므로 추가 준비 없이 바로 돈다.
+#   /data/column_semantic_poc/run.py가 있으면 그쪽을 대신 쓴다 - 폐쇄망에서
+#   이미지 재빌드 없이 코드만 바꿔 돌려보는 경로다(./k8s/scripts/upload-column-poc.ps1).
+#   급하게 실험할 때만 쓰고, 확정되면 커밋해서 이미지로 돌려놓을 것 - PVC에 남은
+#   낡은 코드가 조용히 계속 쓰이는 게 이 경로의 유일한 위험이다.
 #
 # 실행:
 #   kubectl apply -f k8s/column-poc-job.yaml
@@ -24,10 +27,6 @@
 # 각 <csv_stem>/ 안에는 result.semantic.json + run.log(+ 실패 시 .partial.json)가
 # 같이 들어간다.
 #
-# (이 구조 이전 버전들 - CSV마다 <name>_<타임스탬프>/ 폴더였던 것, 그보다 더
-# 전의 평평한 <name>_<타임스탬프>.semantic.json 파일 - 은 마이그레이션 없이
-# 그대로 남아있다.)
-#
 # 이전 결과가 있어도 매번 모든 CSV를 처음부터 다시 돈다 - "이미 결과 있으면
 # 건너뛴다"는 재개(resume) 기능이 예전엔 있었지만, 파이프라인 로직 자체가
 # 계속 바뀌는 지금은 예전 코드로 만든 결과를 "끝났음"으로 인정하는 게 오히려
@@ -35,7 +34,7 @@
 # 특정 CSV가 실패해도(파싱/LLM 오류 등) 나머지는 계속 돌고, 실패 목록은
 # 마지막에 로그로 남는다.
 #
-# run.log에 run.py의 stdout/stderr 전체(각 skill/LLM 호출의 시작·완료·소요시간)가
+# run.log에 stdout/stderr 전체(각 skill/LLM 호출의 시작·완료·소요시간)가
 # 성공/실패 관계없이 항상 남는다 - 성공해도 지우지 않는다. 성공하면 로그 맨
 # 아래에 "==== RESULT ====" 구분선과 함께 최종 결과 JSON을 그대로 붙이고,
 # 실패하면 그때까지 쌓인 partial 결과가 있으면 "==== PARTIAL RESULT ===="로
@@ -58,16 +57,7 @@
 #
 # LLM_API_ENDPOINT/LLM_API_KEY/LLM_MODEL은 .env.example에 정의된 대로
 # sh-ard-asset-agent-secret(robustness-job.yaml/pod.yaml과 같은 secret)에서
-# envFrom으로 그대로 들어온다 - 이 브랜치는 LLM_MODEL1/2/3 같은 멀티모델 인덱싱을
-# 쓰지 않으므로 별도 매핑이 필요 없다.
-#
-# 예전엔 여기서 pip install python-dotenv를 실행했다 - GHCR 이미지의
-# requirements.txt에는 dotenv가 없어서였다(column_semantic_poc/requirements.txt에만
-# 있고, 그건 Dockerfile이 쓰지 않는다). 하지만 폐쇄망 클러스터에선 PyPI 접근이
-# 안 되니 매 Job 실행마다 pip install이 그 자체로 실패 지점이었다. run.py의 dotenv
-# 사용을 examples/run_local.py와 같은 자체 .env 파서로 바꿔서(외부 패키지 없이
-# 직접 파싱 - k8s는 어차피 secret이 환경변수를 주입하니 .env 파일 자체가 없다)
-# 이 설치 자체를 없앴다.
+# envFrom으로 그대로 들어온다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -91,13 +81,21 @@ spec:
             - -c
             - |
               set -uo pipefail
-              SRC_DIR=/data/column_semantic_poc
               DATA_DIR=/data/robustness_test
               OUT_DIR=/data/robustness_test_results
               mkdir -p "$OUT_DIR"
 
-              if [ ! -f "$SRC_DIR/run.py" ] || [ ! -f "$SRC_DIR/csv_repair.py" ]; then
-                echo "[ERROR] $SRC_DIR/run.py 또는 csv_repair.py가 없습니다. 먼저 PVC에 column_semantic_poc를 kubectl cp 하세요." >&2
+              # 기본은 이미지 안의 코드. PVC에 올려둔 코드가 있으면 그게 이긴다.
+              SRC_DIR=/app
+              if [ -f /data/column_semantic_poc/run.py ]; then
+                SRC_DIR=/data/column_semantic_poc
+                echo "[SRC] PVC 코드 사용: $SRC_DIR (이미지 코드가 아님 - 의도한 것인지 확인할 것)"
+              else
+                echo "[SRC] 이미지 코드 사용: $SRC_DIR"
+              fi
+
+              if [ ! -f "$SRC_DIR/run.py" ] || [ ! -d "$SRC_DIR/skills" ]; then
+                echo "[ERROR] $SRC_DIR에 run.py 또는 skills/가 없습니다." >&2
                 exit 1
               fi
 

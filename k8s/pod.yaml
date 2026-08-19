@@ -1,22 +1,18 @@
 # 수동 디버그/실행용 Pod — sleep infinity로 띄운 뒤 exec로 들어가 사용한다.
+# PVC에 코드를 올리고(upload-column-poc.ps1) 결과를 받아오는(download-...) 경유
+# 지점이기도 하다.
 #
 #   kubectl apply -f k8s/data-pvc.yaml && kubectl apply -f k8s/pod.yaml
 #   kubectl exec -it sh-ard-asset-agent -- /bin/bash
-#     $ python examples/run_from_csv.py <csv_path> <asset_name>
-#     $ make test            # vLLM 없이 mock으로 전 구간 검증
+#     $ python run.py /data/robustness_test/x.csv --output /data/out.json
+#     $ python experiments/check_endpoint.py    # LLM 연결/JSON 응답 점검
 #
 # 이미지 태그는 .github/workflows/build-push.yml이 커밋 SHA로 자동 갱신한다.
 # 수동으로 건드리지 말 것.
 #
-# 새 구조에서 달라진 점
-#   - LLM_STRUCTURED_MODE: guided_json(구형) / json_schema(신형) 전환 스위치.
-#     서빙 중인 vLLM 버전에 맞춰야 한다. 틀리면 옵션이 조용히 무시되어
-#     스키마 강제가 걸리지 않은 채로 돌아간다 - 실패하지 않아서 더 위험하다.
-#   - AGENT_MAX_BATCH: 한 파도에 동시 실행할 skill 수. Gateway RPM과 함께 봐야 한다.
-#     RPM=360이면 초당 6건이고, 응답 지연 2초 가정 시 동시 12건까지 채울 수 있다.
-#     배치는 그 안에서 움직여야 하므로 기본 8로 둔다.
-#   - 메모리 상한 상향: probe가 DataFrame을 반복 조회한다(uniqueness는 전수 검사).
-#     넓은 테이블에서 1Gi로는 부족했다.
+# 메모리 상한이 넉넉한 이유: probe와 프로파일링이 DataFrame을 반복 조회한다
+# (uniqueness는 표본이 아니라 전수 검사라 줄일 수 없다). 넓은 테이블에서
+# 1Gi로는 부족했다.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -34,12 +30,10 @@ spec:
         - secretRef:
             name: sh-ard-asset-agent-secret
       env:
-        - name: LLM_STRUCTURED_MODE
-          value: "guided_json"
-        - name: AGENT_MAX_BATCH
-          value: "8"
-        - name: AGENT_MAX_LLM_CALLS
-          value: "300"
+        - name: LLM_REQUESTS_PER_MINUTE
+          value: "360"
+        - name: LLM_MAX_CONCURRENCY
+          value: "12"
         - name: PYTHONPATH
           value: "/app:/app/src"
       volumeMounts:

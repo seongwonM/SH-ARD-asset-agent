@@ -11,5 +11,9 @@ data
 results
 runs
 tests
-experiments
-*.md
+k8s
+deploy
+scripts
+# 루트의 문서만 제외한다. skills/*.md는 프롬프트 본문이라 반드시 이미지에 들어가야
+# 하고, experiments/*.md도 같이 들어가는 편이 배치 로그를 읽을 때 편하다.
+/*.md
