@@ -138,6 +138,10 @@ kubectl logs -f job/column-poc-batch
 ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
 ```
 
+Job 실행 하나 = 폴더 하나(`<KST타임스탬프>/`)이고, 그 아래 CSV마다
+`<csv_stem>/`에 결과 문서 5개와 `run.log`가 들어간다. 중간에 죽은 CSV도 파일은
+남으므로, 완주 여부는 파일 유무가 아니라 `meta.status`로 본다.
+
 이미지를 다시 굽지 않고 코드만 바꿔 돌려보려면
 `./k8s/scripts/upload-column-poc.ps1`로 PVC에 올린다. Job은 PVC에 코드가 있으면
 그쪽을 쓴다 — **실험이 끝나면 반드시 지울 것.** 안 지우면 낡은 코드가 이후 모든

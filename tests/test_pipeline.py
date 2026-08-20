@@ -51,12 +51,22 @@ def test_document_set_is_stable(run_result):
         "probes",
     }
     assert set(docs["plan"]) == {"meta", "first_pass", "gap_rounds", "replans", "execution"}
-    assert set(docs["table"]) == {"meta", "table_context", "relation_analysis", "validation"}
+    assert set(docs["table"]) == {
+        "meta",
+        "table_context",
+        "relation_analysis",
+        "joint_findings",
+        "validation",
+    }
     assert set(docs["llm_calls"]) == {"meta", "prompts", "calls"}
 
     for part, doc in docs.items():
         assert doc["meta"]["part"] == part
         assert doc["meta"]["status"] == "done"
+        # 어떤 예산으로 돈 실행인지가 남아야 결과를 나중에 비교할 수 있다.
+        assert doc["meta"]["max_gap_rounds"] >= 1
+        assert doc["meta"]["max_actions_per_column"] >= 1
+        assert doc["meta"]["max_group_columns"] >= 2
         json.dumps(doc, ensure_ascii=False)
 
     assert docs["rulebase"]["table"]["source_file"] == "equipment_log.csv"
@@ -164,15 +174,29 @@ def test_review_decides_which_columns_reach_the_planner(run_result):
     llm, docs = run_result
     round1 = docs["plan"]["gap_rounds"][0]
 
-    # 컬럼마다 한 번씩 검토가 돌고, 넘어간 것만 planner 대상이 된다.
-    reviews = round1["reviews"]
-    assert len(reviews) == 6
-    assert reviews["power_value"]["verdict"] == "needs_work"
-    assert reviews["run_id"]["verdict"] == "pass"
+    # 계획 문서에는 게이트 결과만 남는다: 누구를 검토했고 누가 넘어갔는지.
+    assert len(round1["reviewed"]) == 6
     assert round1["flagged"] == ["power_value"]
-    # 검토가 적은 근거는 검증하지 않고 그대로 남는다.
-    assert reviews["power_value"]["gap"]
     assert "gap_planner" in llm.labels()
+
+
+def test_each_review_verdict_is_kept_in_that_column_history(run_result):
+    """판정은 컬럼이 지나온 단계다 - 컬럼 문서가 그걸 들고, 계획 문서는 안 베낀다."""
+    _, docs = run_result
+    columns = docs["columns"]["columns"]
+
+    flagged = next(
+        s for s in columns["power_value"]["stages"] if s["stage"] == "column_review"
+    )
+    assert flagged["value"]["verdict"] == "needs_work"
+    assert flagged["value"]["gap"]  # 근거는 검증 없이 그대로 남는다
+    assert flagged["value"]["cites"]
+
+    passed = next(s for s in columns["run_id"]["stages"] if s["stage"] == "column_review")
+    assert passed["value"]["verdict"] == "pass"
+
+    # 같은 내용이 계획 문서에 복사돼 있지 않아야 한다.
+    assert "reviews" not in docs["plan"]["gap_rounds"][0]
 
 
 def test_planner_is_not_called_when_nothing_is_flagged(equipment_df):
@@ -241,13 +265,71 @@ def test_joint_interpretation_updates_every_column_in_the_group(equipment_df):
         # 어떤 컬럼과 같이 봐서 바뀐 것인지가 남아야 한다.
         assert gap["with_columns"] == [c for c in ("power_value", "power_limit") if c != col]
 
+    # 관계는 컬럼 하나에 속한 값이 아니라 테이블 문서에 한 벌만 둔다.
+    findings = docs["table"]["joint_findings"]
+    assert len(findings) == 1
+    assert findings[0]["columns"] == ["power_value", "power_limit"]
+    assert findings[0]["relationship"]
+    assert findings[0]["round"] == 1
+
+
+def test_a_group_relationship_that_is_testable_gets_measured(equipment_df):
+    """검사 가능한 주장은 데이터에 대고 본다 - 보완 단계라고 달라지지 않는다."""
+
+    class Grouping(FakeLLM):
+        def _on_column_review(self, label, payload):
+            if payload["target_column"] in {"power_value", "power_limit"}:
+                return {"verdict": "needs_work", "gap": "짝이 있어 보인다", "cites": []}
+            return {"verdict": "pass", "gap": "", "cites": []}
+
+        def _on_gap_planner(self, label, payload):
+            return {
+                "actions": [
+                    {
+                        "action": "joint_interpretation",
+                        "columns": ["power_value", "power_limit"],
+                        "reason": "측정값과 한계로 보인다",
+                    }
+                ],
+                "skipped": [],
+            }
+
+        def _on_joint_interpretation(self, label, payload):
+            out = super()._on_joint_interpretation(label, payload)
+            out["probe"] = {
+                "expression": "v <= lim",
+                "columns": {"v": "power_value", "lim": "power_limit"},
+            }
+            return out
+
+    docs = run_pipeline(
+        equipment_df,
+        make_runner(Grouping(refute_first_validation=False)),
+        config=PipelineConfig(max_rounds=1, max_workers=4),
+    )
+
+    # 실측값은 다른 probe와 같은 자리에 있고, 어디서 나온 주장인지가 남는다.
+    measured = next(p for p in docs["rulebase"]["probes"] if p.get("source") == "joint_interpretation")
+    assert measured["columns"] == ["power_value", "power_limit"]
+    assert measured["observed"]["true_ratio"] < 1.0  # 표본에 한계 초과가 있다
+
+    # 컬럼 이력과 그룹 기록은 값이 아니라 id로 가리킨다.
+    finding = docs["table"]["joint_findings"][0]
+    assert finding["probe_id"] == measured["probe_id"]
+    gap = next(
+        s for s in docs["columns"]["columns"]["power_value"]["stages"] if s["stage"] == "gap"
+    )
+    assert gap["probe_id"] == measured["probe_id"]
+    assert "observed" not in gap
+
 
 def test_second_gap_round_only_revisits_columns_that_changed(run_result):
     """손대지 않은 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다."""
     _, docs = run_result
     rounds = docs["plan"]["gap_rounds"]
     assert [r["round"] for r in rounds] == [1, 2]
-    assert set(rounds[1]["reviews"]) == {"power_value"}
+    assert rounds[0]["changed"] == ["power_value"]
+    assert rounds[1]["reviewed"] == ["power_value"]
     # 2라운드 검토에서 통과하면 planner를 다시 부르지 않는다.
     assert rounds[1]["planner"] is None
 

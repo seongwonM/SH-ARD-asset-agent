@@ -34,7 +34,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -42,12 +42,14 @@ from column_semantics.core.clock import now_iso
 from column_semantics.core.evidence import build_table_evidence
 from column_semantics.core.history import ColumnHistory
 from column_semantics.core.llm_log import LLMLog
-from column_semantics.core.probes import apply_probes, with_measurements
+from column_semantics.core.probes import apply_probes, run_probe, with_measurements
 from column_semantics.core.relations import build_relation_groups
 from column_semantics.core.timeline import Timeline
 from column_semantics.pipeline.documents import PARTS, build_documents
 from column_semantics.pipeline.plan import (
+    MAX_ACTIONS_PER_COLUMN,
     MAX_GAP_ROUNDS,
+    MAX_GROUP_COLUMNS,
     STAGE_ORDER,
     first_pass_stages,
     flagged_columns,
@@ -203,28 +205,36 @@ def review_columns_parallel(
 
 
 def resolve_gaps(
+    df: pd.DataFrame,
     runner: StageRunner,
     evidence: Dict[str, Any],
     results: Dict[str, Any],
     max_workers: int,
     reviews: Dict[str, Any],
+    probe_log: List[Dict[str, Any]],
+    joint_findings: List[Dict[str, Any]],
     history: Optional[ColumnHistory] = None,
     stage_info: Optional[Dict[str, Any]] = None,
     action_counts: Optional[Dict[str, int]] = None,
+    done_actions: Optional[Set[Tuple[str, Tuple[str, ...]]]] = None,
 ) -> Dict[str, Any]:
     """검토가 넘긴 컬럼에 대해 gap_planner가 정한 행동을 실행한다.
 
     넘어온 컬럼이 없으면 planner를 부르지 않고 그대로 끝낸다 - planner가 도는
     조건은 임계값이 아니라 검토 결과다.
+
+    여기서 돌려주는 기록은 **계획에 관한 것만**이다. 컬럼별 검토 내용은 컬럼
+    이력에, 호출 원문은 llm_calls에, probe 실측은 probe_log에 각각 들어간다 -
+    같은 값을 두 문서에 복사하지 않는다.
     """
     flagged = flagged_columns(reviews)
     record: Dict[str, Any] = {
-        "reviews": reviews,
+        "reviewed": sorted(reviews),
         "flagged": flagged,
         "planner": None,
         "actions": [],
         "dropped": [],
-        "results": [],
+        "changed": [],
     }
     if not flagged:
         print("[GAP] 검토를 통과하지 못한 컬럼 없음 - planner 호출 생략", flush=True)
@@ -237,6 +247,7 @@ def resolve_gaps(
         flagged,
         evidence["table"]["columns"],
         action_counts,
+        done_actions,
     )
     record["planner"] = {"raw": planned.get("raw"), "skipped": planned.get("skipped")}
     record["actions"] = actions
@@ -261,11 +272,27 @@ def resolve_gaps(
     )
 
     columns = results.setdefault("column_interpretation", {}).setdefault("columns", {})
+    changed: List[str] = []
     for i, action in enumerate(actions):
         out = outputs.get(i)
         if not isinstance(out, dict):
             continue
-        record["results"].append({"action": action["action"], "columns": action["columns"], "output": out})
+
+        # 여러 컬럼을 묶어 본 결과의 "관계"는 컬럼 하나에 속한 값이 아니다.
+        # 컬럼마다 복사하지 않고 테이블 문서로 한 벌만 보낸다.
+        probe_id = None
+        if action["action"] == "joint_interpretation":
+            probe_id = _run_group_probe(df, out.get("probe"), action, probe_log, stage_info)
+            joint_findings.append(
+                {
+                    "columns": action["columns"],
+                    "relationship": out.get("relationship"),
+                    "reason": action.get("reason", ""),
+                    "probe_id": probe_id,
+                    **(stage_info or {}),
+                }
+            )
+
         for col in action["columns"]:
             update = _column_update(action["action"], col, out)
             if not update or col not in columns:
@@ -278,6 +305,7 @@ def resolve_gaps(
             columns[col].setdefault("gap_history", []).append(
                 {"skill": action["action"], "reason": action.get("reason", "")}
             )
+            changed.append(col)
             if history is not None:
                 history.record_change(
                     col,
@@ -288,10 +316,43 @@ def resolve_gaps(
                     with_columns=[c for c in action["columns"] if c != col],
                     reason=action.get("reason", ""),
                     skill_output=update,
+                    probe_id=probe_id,
                     **(stage_info or {}),
                 )
 
+    record["changed"] = sorted(set(changed))
     return record
+
+
+def _run_group_probe(
+    df: pd.DataFrame,
+    probe: Any,
+    action: Dict[str, Any],
+    probe_log: List[Dict[str, Any]],
+    stage_info: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """묶어 본 결과가 행 단위로 검사 가능한 관계를 냈으면 그 자리에서 실측한다.
+
+    검사 가능한 주장은 데이터에 대고 본다는 규칙이 보완 단계라고 달라지지 않는다.
+    실측값은 다른 probe와 같은 자리(rulebase 문서)로 가고, 컬럼 이력과 그룹
+    기록은 probe_id로만 가리킨다.
+    """
+    if not isinstance(probe, dict):
+        return None
+    observed = run_probe(df, probe)
+    if observed is None:
+        return None
+    probe_id = f"probe-{len(probe_log) + 1}"
+    probe_log.append(
+        {
+            "probe_id": probe_id,
+            **(stage_info or {}),
+            "source": "joint_interpretation",
+            "columns": action["columns"],
+            "observed": observed,
+        }
+    )
+    return probe_id
 
 
 def _column_update(action: str, column: str, output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -384,6 +445,7 @@ def run_pipeline(
     history = ColumnHistory()
     probe_log: List[Dict[str, Any]] = []
     validation_rounds: List[Dict[str, Any]] = []
+    joint_findings: List[Dict[str, Any]] = []
     planning: Dict[str, Any] = {"first_pass": {}, "gap_rounds": [], "replans": []}
 
     def build_docs(status: str, validation_status: str = "not_yet_run") -> Documents:
@@ -391,7 +453,12 @@ def run_pipeline(
             meta={
                 **config.meta,
                 "llm_model": getattr(runner.llm, "model", ""),
+                # 이 실행이 어떤 예산으로 돌았는지. 결과를 나중에 비교할 때 예산이
+                # 바뀐 건지 모델이 다르게 답한 건지 구분하려면 같이 남아야 한다.
                 "max_rounds": config.max_rounds,
+                "max_gap_rounds": MAX_GAP_ROUNDS,
+                "max_actions_per_column": MAX_ACTIONS_PER_COLUMN,
+                "max_group_columns": MAX_GROUP_COLUMNS,
                 "status": status,
                 "validation_status": validation_status,
                 "started_at": run_started_at,
@@ -404,6 +471,7 @@ def run_pipeline(
             probe_log=probe_log,
             planning=planning,
             validation_rounds=validation_rounds,
+            joint_findings=joint_findings,
             timeline_events=timeline.events(),
             llm_log=llm_log,
         )
@@ -514,6 +582,7 @@ def run_pipeline(
     )
 
     action_counts: Dict[str, int] = {}
+    done_actions: Set[Tuple[str, Tuple[str, ...]]] = set()
 
     def gap_round(round_no: int, columns_to_review: List[str]) -> Dict[str, Any]:
         """검토 -> (넘어온 게 있으면) planner -> 실행. 한 라운드가 여기 전부다."""
@@ -533,14 +602,18 @@ def run_pipeline(
         with timeline.measure(event="gap_resolution", round=round_no) as entry:
             with runner.stage(stage="gap", round=round_no, phase="exec"):
                 record = resolve_gaps(
+                    df,
                     runner,
                     evidence,
                     results,
                     max_workers,
                     reviews=reviews,
+                    probe_log=probe_log,
+                    joint_findings=joint_findings,
                     history=history,
                     stage_info=_stage_info("exec", round_no),
                     action_counts=action_counts,
+                    done_actions=done_actions,
                 )
             entry["flagged"] = len(record["flagged"])
             entry["actions"] = len(record["actions"])
@@ -560,10 +633,9 @@ def run_pipeline(
     for round_no in range(2, MAX_GAP_ROUNDS + 1):
         # 다시 검토하는 것은 이번 라운드에 실제로 바뀐 컬럼뿐이다. 손대지 않은
         # 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다.
-        changed = sorted({c for r in touched["results"] for c in r["columns"]})
-        if not changed:
+        if not touched["changed"]:
             break
-        touched = gap_round(round_no, changed)
+        touched = gap_round(round_no, touched["changed"])
 
     if "relation_analysis" in first_pass:
         with runner.stage(stage="first_pass", round=1):

@@ -137,6 +137,20 @@ def test_duplicate_actions_are_collapsed():
     assert "중복" in dropped[0]["why"]
 
 
+def test_the_same_action_is_not_repeated_in_a_later_round():
+    """라운드가 바뀌었다고 같은 일을 다시 하면 같은 답에 호출만 는다."""
+    done = set()
+    counts = {}
+    action = [{"action": "explain_sparsity", "columns": ["a"]}]
+
+    kept, _ = sanitize_gap_actions(action, ["a"], ["a"], counts, done)
+    assert len(kept) == 1
+
+    kept2, dropped2 = sanitize_gap_actions(action, ["a"], ["a"], counts, done)
+    assert kept2 == []
+    assert "중복" in dropped2[0]["why"]
+
+
 def test_gap_actions_tolerate_missing_field():
     assert sanitize_gap_actions(None, ["a"], ["a"]) == ([], [])
 

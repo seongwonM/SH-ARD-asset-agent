@@ -59,7 +59,7 @@ def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     checks = rounds[-1]["checks"] if rounds else []
     interpretations = [c["final"]["interpretation"] or {} for c in columns.values()]
     gap_rounds = documents["plan"]["gap_rounds"]
-    reviewed = sum(len(r["reviews"]) for r in gap_rounds)
+    reviewed = sum(len(r["reviewed"]) for r in gap_rounds)
     flagged_names = sorted({c for r in gap_rounds for c in r["flagged"]})
     flagged = sum(len(r["flagged"]) for r in gap_rounds)
     return {
@@ -85,9 +85,7 @@ def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         "flagged_columns": flagged_names,
         "flag_ratio": round(flagged / reviewed, 3) if reviewed else None,
         "gap_actions": sum(len(r["actions"]) for r in gap_rounds),
-        "joint_actions": sum(
-            1 for r in gap_rounds for a in r["actions"] if a["action"] == "joint_interpretation"
-        ),
+        "joint_actions": len(documents["table"]["joint_findings"]),
         # 실행 불가로 버려진 행동. 늘어나면 planner가 계약을 못 지키고 있다는 뜻이다.
         "dropped_actions": sum(len(r["dropped"]) for r in gap_rounds),
         "table_context": documents["table"]["table_context"],

@@ -31,7 +31,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 # 고정 단계의 정규 순서.
 STAGE_ORDER = [
@@ -146,20 +146,25 @@ def sanitize_gap_actions(
     flagged: Iterable[str],
     all_columns: Iterable[str],
     action_counts: Optional[Dict[str, int]] = None,
+    done: Optional[Set[Tuple[str, Tuple[str, ...]]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """gap_planner 출력에서 실행 가능한 행동만 남기고, 버린 것은 이유와 함께 돌려준다.
 
     거르는 것은 전부 "실행할 수 있는가"다 - 아는 행동인지, 컬럼이 실재하는지,
-    검토가 넘긴 컬럼을 대상으로 하는지, 예산 안인지. 근거가 충분한지는 보지 않는다.
+    검토가 넘긴 컬럼을 대상으로 하는지, 예산 안인지, 이미 한 일인지. 근거가
+    충분한지는 보지 않는다.
+
+    `action_counts`와 `done`은 호출을 넘어 누적된다. 라운드가 바뀌었다고 같은
+    (행동, 컬럼집합)을 다시 돌리면 같은 입력에 같은 답이 나오고 호출만 는다.
     버린 행동도 계획 문서에 남는다: planner가 무엇을 하려 했는지가 사라지면
     프롬프트를 고칠 근거도 사라진다.
     """
     flagged_set = set(flagged)
     known = set(all_columns)
-    counts = dict(action_counts or {})
+    counts = action_counts if action_counts is not None else {}
+    seen: Set[Tuple[str, Tuple[str, ...]]] = done if done is not None else set()
     kept: List[Dict[str, Any]] = []
     dropped: List[Dict[str, Any]] = []
-    seen: set = set()
 
     for action in actions if isinstance(actions, list) else []:
         if not isinstance(action, dict):
@@ -199,7 +204,7 @@ def sanitize_gap_actions(
 
         key = (name, tuple(sorted(columns)))
         if key in seen:
-            dropped.append({**record, "why": "같은 행동 중복"})
+            dropped.append({**record, "why": "같은 행동 중복(이미 실행했거나 같은 계획 안에서 반복)"})
             continue
 
         over = [c for c in columns if counts.get(c, 0) >= MAX_ACTIONS_PER_COLUMN]

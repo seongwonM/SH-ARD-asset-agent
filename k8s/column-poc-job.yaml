@@ -130,6 +130,12 @@ spec:
               # 시간대 DB가 없을 수 있어 "Asia/Seoul" 이름 대신 UTC + 9시간 고정
               # 오프셋을 계산한다.
               run_ts=$(date -u -d '+9 hours' +%Y%m%d_%H%M%S)
+              if [ -z "$run_ts" ]; then
+                # date가 이 옵션을 모르면(베이스 이미지가 바뀐 경우) 결과가 실행
+                # 폴더 없이 루트에 쏟아진다 - 어느 실행 것인지 영영 못 가린다.
+                echo "[ERROR] 실행 타임스탬프를 만들지 못했습니다(date -u -d 미지원)." >&2
+                exit 1
+              fi
               run_dir="$OUT_DIR/$run_ts"
               echo "[RUN-ID] $run_ts -> $run_dir (돌릴 CSV가 있을 때만 생성됨)"
 
