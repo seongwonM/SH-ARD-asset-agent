@@ -9,9 +9,10 @@
   로컬로 복사한다.
 
   column-poc-job.yaml(Job: column-poc-batch) 결과: Job이 시작될 때 KST 타임스탬프를
-  한 번 찍어 <실행타임스탬프>/ 폴더를 만들고, 그 실행이 처리한 CSV들이 전부
-  그 아래 <csv_stem>/ 하위폴더로 들어간다(Job 실행 한 번 = 실험 하나 = 폴더 하나 -
-  CSV마다 타임스탬프가 따로 찍히지 않는다). 각 <csv_stem>/ 안에는 결과 문서
+  한 번 찍어 <실행타임스탬프>_<모델명>/ 폴더를 만들고, 그 실행이 처리한 CSV들이
+  전부 그 아래 <csv_stem>/ 하위폴더로 들어간다(CSV마다 타임스탬프가 따로 찍히지
+  않는다). LLM_MODEL에 모델을 여러 개 적었으면 타임스탬프는 같고 모델명만 다른
+  폴더가 모델 수만큼 생긴다 - 같은 실험의 모델별 결과다. 각 <csv_stem>/ 안에는 결과 문서
   5개(result.semantic.columns.json / .rulebase.json / .plan.json / .table.json /
   .llm_calls.json)와 run.log(성공/실패 모두 항상 남음)가 같이 들어있다. 중간에
   죽은 CSV도 파일은 그대로 있고, 완주 여부는 파일 유무가 아니라 meta.status가
@@ -24,7 +25,7 @@
 
 .PARAMETER Target
   PVC 안 /data/robustness_test_results 아래에서 받아올 파일 또는 폴더 경로
-  (예: 20260818_140500 - 그 실행 전체, 또는 20260818_140500/my_asset - CSV 하나만).
+  (예: 20260818_140500_<모델명> - 그 모델의 실행 전체, 또는 .../my_asset - CSV 하나만).
   생략하면 전체를 받는다.
 
 .PARAMETER PodName
@@ -37,8 +38,8 @@
 
 .EXAMPLE
   ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
-  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target 20260818_140500
-  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target 20260818_140500/my_asset
+  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target 20260818_140500_Qwen-Qwen2.5-32B-Instruct
+  ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results -Target 20260818_140500_Qwen-Qwen2.5-32B-Instruct/my_asset
 #>
 param(
     [string]$LocalDir = "results",

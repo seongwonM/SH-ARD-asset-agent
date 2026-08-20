@@ -26,6 +26,7 @@ from typing import Any, Dict, Set, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from column_semantics.adapters.env import load_dotenv  # noqa: E402
+from column_semantics.adapters.llm import models_from_env  # noqa: E402
 from column_semantics.app import (  # noqa: E402
     DEFAULT_PROMPT_DIR,
     DEFAULT_SKILL_DIR,
@@ -114,7 +115,10 @@ def main() -> int:
     args = parser.parse_args()
 
     load_dotenv()
-    model = os.environ.get("LLM_MODEL", "")
+    models = models_from_env()
+    if not models:
+        print("[ERROR] LLM_MODEL이 비어 있습니다(.env 확인).", file=sys.stderr)
+        return 1
     done = load_done(args.output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -123,15 +127,25 @@ def main() -> int:
         print(f"[ERROR] {args.data_dir}에 CSV가 없습니다.", file=sys.stderr)
         return 1
 
-    planned = [(c, r) for c in csvs for r in range(1, args.reps + 1)]
-    print(f"[PLAN] {len(csvs)}개 데이터셋 x {args.reps}회 = {len(planned)}건, 이미 끝난 것 {len(done)}건")
+    # (dataset, model, rep)이 이미 회차 키라, 모델을 늘리면 그대로 축이 하나 는다.
+    planned = [(m, c, r) for m in models for c in csvs for r in range(1, args.reps + 1)]
+    print(
+        f"[PLAN] 모델 {len(models)}개({', '.join(models)}) x 데이터셋 {len(csvs)}개 "
+        f"x {args.reps}회 = {len(planned)}건, 이미 끝난 것 {len(done)}건"
+    )
+    print(
+        f"[PLAN] rpm={os.environ.get('LLM_REQUESTS_PER_MINUTE', '360')} "
+        f"concurrency={os.environ.get('LLM_MAX_CONCURRENCY', '12')} "
+        f"max_rounds={args.max_rounds} endpoint={os.environ.get('LLM_API_ENDPOINT', '')}"
+    )
 
     failures = 0
-    for csv, rep in planned:
+    for model, csv, rep in planned:
         key: Key = (csv.stem, model, rep)
         if key in done:
             continue
-        print(f"\n[RUN] {csv.stem} rep={rep}")
+        os.environ["LLM_MODEL"] = model
+        print(f"\n[RUN] {csv.stem} model={model} rep={rep}")
         started = time.time()
         row: Dict[str, Any] = {"dataset": csv.stem, "model": model, "rep": rep}
         try:

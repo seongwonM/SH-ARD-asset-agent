@@ -6,7 +6,12 @@ pipeline은 여기의 구체 클래스가 아니라 프로토콜(`LLMClient`, `P
 
 from column_semantics.adapters.csv_source import CsvRepairError, read_csv_safely
 from column_semantics.adapters.env import load_dotenv
-from column_semantics.adapters.llm import LLMClient, OpenAICompatibleLLM, make_llm_from_env
+from column_semantics.adapters.llm import (
+    LLMClient,
+    OpenAICompatibleLLM,
+    make_llm_from_env,
+    models_from_env,
+)
 from column_semantics.adapters.prompts import FileSystemPrompts, PromptLibrary
 from column_semantics.adapters.ratelimit import RateLimiter
 
@@ -19,5 +24,6 @@ __all__ = [
     "RateLimiter",
     "load_dotenv",
     "make_llm_from_env",
+    "models_from_env",
     "read_csv_safely",
 ]

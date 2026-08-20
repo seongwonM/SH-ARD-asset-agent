@@ -13,7 +13,10 @@ class RateLimiter:
 
     def __init__(self, requests_per_minute: int, max_concurrency: int):
         self.max_concurrency = max(1, max_concurrency)
-        self._rpm = max(1, requests_per_minute)
+        # 실행 설정은 로그와 meta에 그대로 실린다 - 결과를 나중에 비교할 때
+        # 처리량 설정이 달랐는지 가릴 수 있어야 한다.
+        self.requests_per_minute = max(1, requests_per_minute)
+        self._rpm = self.requests_per_minute
         self._lock = threading.Lock()
         self._timestamps: List[float] = []
         self._semaphore = threading.BoundedSemaphore(self.max_concurrency)

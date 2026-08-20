@@ -44,6 +44,7 @@ git commit -m "exp(001): profile kind 임계값 가설"
 git push -u origin exp/001-profile-kind-threshold
 git rev-parse HEAD
 make robustness DATA=./data OUT=./results/001.jsonl REPS=5
+# 모델 비교는 .env의 LLM_MODEL에 쉼표로 나열하면 된다(모델 x 데이터셋 x 회차).
 ```
 
 실행 전에 반드시 커밋하고 SHA를 기록한다. 실행 중 코드를 수정하면 어떤 코드가 결과를

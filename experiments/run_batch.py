@@ -16,6 +16,7 @@ k8s의 column-poc-batch Job은 같은 일을 셸 루프로 한다(Job은 CSV 하
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -24,10 +25,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from column_semantics.adapters.env import load_dotenv  # noqa: E402
+from column_semantics.adapters.llm import models_from_env  # noqa: E402
 from column_semantics.app import (  # noqa: E402
     DEFAULT_PROMPT_DIR,
     DEFAULT_SKILL_DIR,
     analyze_csv,
+    safe_name,
 )
 from column_semantics.core.clock import KST  # noqa: E402
 
@@ -48,27 +51,44 @@ def main() -> int:
         print(f"[ERROR] {args.data_dir}에 CSV가 없습니다.", file=sys.stderr)
         return 1
 
-    run_dir = args.out / datetime.now(KST).strftime("%Y%m%d_%H%M%S")
-    print(f"[RUN-ID] {run_dir}")
+    # 모델은 LLM_MODEL에 쉼표로 여러 개 적을 수 있다. 실행 하나는 항상 모델
+    # 하나이고, 모델마다 결과 폴더를 따로 만든다 - 한 폴더에 섞이면 어느 모델이
+    # 낸 결과인지 파일만 보고는 알 수 없다.
+    models = models_from_env()
+    if not models:
+        print("[ERROR] LLM_MODEL이 비어 있습니다(.env 확인).", file=sys.stderr)
+        return 1
+
+    # 타임스탬프는 배치 전체에 하나. 모델이 여럿이어도 같은 실험이다.
+    run_ts = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
+    print(f"[BATCH] 모델 {len(models)}개: {', '.join(models)}")
+    print(f"[BATCH] CSV {len(csvs)}개: {', '.join(c.name for c in csvs)}")
+    print(f"[BATCH] 출력 루트: {args.out} / 실행 타임스탬프: {run_ts}")
 
     failed = []
-    for csv in csvs:
-        exp_dir = run_dir / csv.stem
-        out = exp_dir / "result.semantic.json"
-        print(f"\n[RUN] {csv.name} -> {exp_dir}")
-        try:
-            analyze_csv(
-                csv_path=csv,
-                prompt_dir=args.prompts,
-                skill_dir=args.skills,
-                max_rounds=args.max_rounds,
-                output=out,
-            )
-        except Exception:  # noqa: BLE001 - CSV 하나가 실패해도 나머지는 계속 돈다
-            traceback.print_exc()
-            failed.append(csv.stem)
+    for model in models:
+        os.environ["LLM_MODEL"] = model
+        run_dir = args.out / f"{run_ts}_{safe_name(model)}"
+        print(f"\n[MODEL] {model} -> {run_dir}")
 
-    print(f"\n==== 완료: {len(csvs)}개 중 {len(csvs) - len(failed)}개 성공 ====")
+        for csv in csvs:
+            exp_dir = run_dir / csv.stem
+            out = exp_dir / "result.semantic.json"
+            print(f"\n[RUN] {csv.name} -> {exp_dir}")
+            try:
+                analyze_csv(
+                    csv_path=csv,
+                    prompt_dir=args.prompts,
+                    skill_dir=args.skills,
+                    max_rounds=args.max_rounds,
+                    output=out,
+                )
+            except Exception:  # noqa: BLE001 - CSV 하나가 실패해도 나머지는 계속 돈다
+                traceback.print_exc()
+                failed.append(f"{model}/{csv.stem}")
+
+    total = len(csvs) * len(models)
+    print(f"\n==== 완료: {total}건 중 {total - len(failed)}건 성공 ====")
     if failed:
         print("[FAILED LIST] " + " ".join(failed))
         return 1

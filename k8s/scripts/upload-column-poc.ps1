@@ -49,8 +49,8 @@ $envVars = Read-DotEnv ".env"
 $Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
 $nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
 
-# run.py(진입점) / src(구현) / prompts(고정 단계) / skills(보완)가 한 세트다. 넷 중 하나만 낡아도
-# 원인을 알기 어려운 실패가 나므로 항상 셋을 같이 올린다.
+# run.py(진입점) / src(구현) / prompts(고정 단계) / skills(보완)가 한 세트다. 넷 중 하나만
+# 낡아도 원인을 알기 어려운 실패가 나므로 항상 넷을 같이 올린다.
 $required = @("run.py", "src", "prompts", "skills")
 foreach ($item in $required) {
     if (-not (Test-Path (Join-Path $LocalDir $item))) {

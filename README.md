@@ -132,15 +132,20 @@ LLM 판단이 아니라 데이터 조건이다.
 make batch DATA=./data OUT=./results
 
 # k8s: 이미지 안 코드로 바로 돈다 (CI가 커밋 SHA로 이미지 태그를 갱신)
+./k8s/scripts/create-secret-from-env.ps1        # .env의 LLM_* -> k8s secret
 kubectl apply -f k8s/data-pvc.yaml
 kubectl apply -f k8s/column-poc-job.yaml
 kubectl logs -f job/column-poc-batch
 ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
 ```
 
-Job 실행 하나 = 폴더 하나(`<KST타임스탬프>/`)이고, 그 아래 CSV마다
-`<csv_stem>/`에 결과 문서 5개와 `run.log`가 들어간다. 중간에 죽은 CSV도 파일은
-남으므로, 완주 여부는 파일 유무가 아니라 `meta.status`로 본다.
+결과는 `<KST타임스탬프>_<모델명>/<csv_stem>/`에 문서 5개와 `run.log`로 떨어진다.
+**`LLM_MODEL`에 쉼표로 여러 모델을 적으면 모델마다 한 바퀴씩 돌고 폴더가 갈린다**
+— 타임스탬프는 같으니 같은 실험으로 묶인다. 중간에 죽은 CSV도 파일은 남으므로,
+완주 여부는 파일 유무가 아니라 `meta.status`로 본다.
+
+실행 조건(모델·엔드포인트·RPM·동시성·예산·행/컬럼 수)은 시작 시 `[BATCH]`/`[CONFIG]`
+줄로 로그에 찍히고, 같은 값이 모든 결과 문서의 `meta`에도 들어간다.
 
 이미지를 다시 굽지 않고 코드만 바꿔 돌려보려면
 `./k8s/scripts/upload-column-poc.ps1`로 PVC에 올린다. Job은 PVC에 코드가 있으면

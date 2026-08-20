@@ -18,7 +18,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 from column_semantics.core.clock import now_iso
 from column_semantics.core.jsonx import clean_for_json
@@ -193,6 +193,19 @@ class OpenAICompatibleLLM:
         )
 
 
+def models_from_env() -> List[str]:
+    """LLM_MODEL을 모델 목록으로 읽는다. 쉼표로 여러 개를 적을 수 있다.
+
+        LLM_MODEL=modelA              -> ["modelA"]
+        LLM_MODEL=modelA, modelB      -> ["modelA", "modelB"]
+
+    여러 모델을 도는 것은 배치/실험의 일이고, 실행 하나는 항상 모델 하나다 -
+    한 결과 폴더 안에 두 모델의 출력이 섞이면 어느 쪽이 낸 건지 알 수 없다.
+    """
+    raw = os.getenv("LLM_MODEL", "")
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
 def make_llm_from_env(
     llm_log: Optional[LLMLog] = None,
     rate_limiter: Optional[RateLimiter] = None,
@@ -201,6 +214,9 @@ def make_llm_from_env(
 
     k8s에서는 secret `sh-ard-asset-agent-secret`이 envFrom으로 주입하고,
     로컬에서는 .env를 `load_dotenv`가 읽는다.
+
+    LLM_MODEL에 여러 개가 적혀 있으면 첫 번째만 쓴다(한 실행 = 한 모델). 조용히
+    고르면 결과를 나중에 볼 때 어느 모델이었는지 헷갈리므로 로그로 알린다.
     """
     try:
         from openai import OpenAI
@@ -211,7 +227,14 @@ def make_llm_from_env(
 
     endpoint = os.getenv("LLM_API_ENDPOINT")
     api_key = os.getenv("LLM_API_KEY", "EMPTY")
-    model = os.getenv("LLM_MODEL")
+    models = models_from_env()
+    model = models[0] if models else None
+    if len(models) > 1:
+        print(
+            f"[LLM] LLM_MODEL에 {len(models)}개가 지정됨 - 이 실행은 첫 번째({model})만 쓴다. "
+            "모델별로 돌리려면 배치(experiments/run_batch.py, k8s Job)를 쓸 것.",
+            flush=True,
+        )
 
     missing = [
         name

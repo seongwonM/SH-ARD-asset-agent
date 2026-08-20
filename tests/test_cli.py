@@ -43,6 +43,12 @@ def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
     columns = read(paths["columns"])
     assert columns["meta"]["status"] == "done"
     assert columns["meta"]["source_csv"] == str(equipment_csv)
+    # 처리량 설정과 입력 크기도 실행 설정이다 - 결과 비교에 필요하다.
+    assert columns["meta"]["row_count"] == 12
+    assert columns["meta"]["column_count"] == 6
+    assert columns["meta"]["requests_per_minute"] >= 1
+    assert columns["meta"]["max_concurrency"] >= 1
+    assert "llm_endpoint" in columns["meta"]
     assert columns["columns"]["power_value"]["stages"]
     assert read(paths["table"])["table_context"]["grain"]
     assert read(paths["rulebase"])["column_profiles"]["run_id"]["name"] == "run_id"

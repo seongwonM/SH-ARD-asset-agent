@@ -63,7 +63,7 @@ def test_document_set_is_stable(run_result):
     for part, doc in docs.items():
         assert doc["meta"]["part"] == part
         assert doc["meta"]["status"] == "done"
-        # 어떤 예산으로 돈 실행인지가 남아야 결과를 나중에 비교할 수 있다.
+        # 어떤 설정으로 돈 실행인지가 남아야 결과를 나중에 비교할 수 있다.
         assert doc["meta"]["max_gap_rounds"] >= 1
         assert doc["meta"]["max_actions_per_column"] >= 1
         assert doc["meta"]["max_group_columns"] >= 2
