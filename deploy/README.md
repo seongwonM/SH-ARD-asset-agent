@@ -1,4 +1,10 @@
-# GHCR 이미지 배포
+# 배포 / 실행 환경
+
+이 폴더에 컨테이너 이미지(`Dockerfile`)와 모델 서버 기동 스크립트
+(`start_qwen30b_vllm.sh`)가 같이 있다 - 둘 다 "코드를 어디서 돌릴 것인가"에
+대한 것이라 한곳에 둔다.
+
+## GHCR 이미지 배포
 
 `.github/workflows/build-push.yml`은 `main`과 `exp/**` 브랜치 push를 테스트한 뒤
 `ghcr.io/seongwonm/sh-ard-asset-agent`에 이미지를 발행한다.

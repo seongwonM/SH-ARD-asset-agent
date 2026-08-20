@@ -7,10 +7,13 @@
 # 코드 위치
 #   기본은 이미지 안의 /app이다. run.py / src / prompts / skills가 deploy/Dockerfile로
 #   COPY되어 있으므로 추가 준비 없이 바로 돈다.
-#   /data/column_semantic_poc/run.py가 있으면 그쪽을 대신 쓴다 - 폐쇄망에서
+#   USE_PVC_CODE=1로 두면 /data/column_semantic_poc의 코드를 대신 쓴다 - 폐쇄망에서
 #   이미지 재빌드 없이 코드만 바꿔 돌려보는 경로다(./k8s/scripts/upload-column-poc.ps1).
-#   급하게 실험할 때만 쓰고, 확정되면 커밋해서 이미지로 돌려놓을 것 - PVC에 남은
-#   낡은 코드가 조용히 계속 쓰이는 게 이 경로의 유일한 위험이다.
+#   기본값은 0이라 명시하지 않으면 항상 이미지 코드가 돈다. 급하게 실험할 때만
+#   켜고, 확정되면 커밋해서 이미지로 돌려놓을 것.
+#
+#   어느 코드가 돌았는지는 로그 맨 앞 [SRC] 줄이 말해준다. 이미지 코드면 빌드된
+#   커밋 SHA까지 찍힌다 - "고친 코드가 도는 게 맞나"는 그 줄로 확인한다.
 #
 # 실행:
 #   kubectl apply -f k8s/column-poc-job.yaml
@@ -92,13 +95,25 @@ spec:
               OUT_DIR=/data/robustness_test_results
               mkdir -p "$OUT_DIR"
 
-              # 기본은 이미지 안의 코드. PVC에 올려둔 코드가 있으면 그게 이긴다.
+              # 코드는 기본적으로 이미지 안의 /app을 쓴다. PVC에 올려둔 코드를 쓰려면
+              # USE_PVC_CODE=1을 명시해야 한다 - 예전에는 PVC에 run.py가 있기만 하면
+              # 조용히 그쪽이 이겼는데, 그러면 몇 달 전 업로드가 남아 있는 줄 모르고
+              # "새로 고친 코드가 왜 안 도나"를 이미지에서 찾게 된다.
               SRC_DIR=/app
-              if [ -f /data/column_semantic_poc/run.py ]; then
-                SRC_DIR=/data/column_semantic_poc
-                echo "[SRC] PVC 코드 사용: $SRC_DIR (이미지 코드가 아님 - 의도한 것인지 확인할 것)"
+              PVC_SRC=/data/column_semantic_poc
+              if [ "${USE_PVC_CODE:-0}" = "1" ]; then
+                if [ ! -f "$PVC_SRC/run.py" ]; then
+                  echo "[ERROR] USE_PVC_CODE=1인데 $PVC_SRC/run.py가 없습니다. upload-column-poc.ps1로 올리세요." >&2
+                  exit 1
+                fi
+                SRC_DIR="$PVC_SRC"
+                echo "[SRC] PVC 코드 사용: $SRC_DIR (이미지 코드가 아님 - 실험이 끝나면 지울 것)"
               else
-                echo "[SRC] 이미지 코드 사용: $SRC_DIR"
+                echo "[SRC] 이미지 코드 사용: $SRC_DIR (빌드: $(cat /app/BUILD_SHA 2>/dev/null || echo unknown))"
+                if [ -f "$PVC_SRC/run.py" ]; then
+                  echo "[SRC] 참고: $PVC_SRC 에 예전에 올린 코드가 남아 있습니다. 지금은 쓰지 않습니다."
+                  echo "[SRC]       지우려면: kubectl exec sh-ard-asset-agent -- rm -rf $PVC_SRC"
+                fi
               fi
 
               if [ ! -f "$SRC_DIR/run.py" ] || [ ! -d "$SRC_DIR/prompts" ] || [ ! -d "$SRC_DIR/skills" ]; then
@@ -207,6 +222,10 @@ spec:
                 echo "[FAILED LOGS] 이번 실행 폴더는 $OUT_DIR/${run_ts}_<모델> 이고, 그 안의 <name>/run.log에 전체 로그와 죽기 직전까지의 columns/table 문서가 남아있다."
                 exit 1
               fi
+          env:
+            # PVC에 올린 코드로 돌리려면 "1". 기본은 이미지 코드다.
+            - name: USE_PVC_CODE
+              value: "0"
           envFrom:
             - secretRef:
                 name: sh-ard-asset-agent-secret

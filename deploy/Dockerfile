@@ -1,8 +1,13 @@
 FROM python:3.11-slim
 
+# 이 이미지가 어느 커밋으로 구워졌는지. 로그만 보고 "내가 방금 고친 코드가
+# 도는 게 맞나"를 확인할 수 있어야 한다(CI가 --build-arg로 넣는다).
+ARG GIT_SHA=unknown
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app:/app/src
+    PYTHONPATH=/app:/app/src \
+    BUILD_SHA=$GIT_SHA
 
 WORKDIR /app
 
@@ -22,5 +27,7 @@ COPY src ./src
 COPY prompts ./prompts
 COPY skills ./skills
 COPY experiments ./experiments
+
+RUN printf '%s' "$GIT_SHA" > /app/BUILD_SHA
 
 CMD ["sleep", "infinity"]
