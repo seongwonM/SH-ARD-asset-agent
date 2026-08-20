@@ -82,10 +82,13 @@ def test_output_root_splits_by_model_and_keeps_the_log(tmp_path, equipment_csv, 
         ]
     ) == 0
 
-    expected = {"20260820_120000_modelA", "20260820_120000_vendor-Model-B"}
-    assert {p.name for p in tmp_path.iterdir() if p.is_dir()} == expected
+    expected = {
+        "20260820_120000_modelA": "modelA",
+        "20260820_120000_vendor-Model-B": "vendor/Model-B",
+    }
+    assert {p.name for p in tmp_path.iterdir() if p.is_dir()} == set(expected)
 
-    for folder in expected:
+    for folder, model in expected.items():
         run_dir = tmp_path / folder / equipment_csv.stem
         names = sorted(p.name for p in run_dir.iterdir())
         assert names == sorted(
@@ -94,7 +97,9 @@ def test_output_root_splits_by_model_and_keeps_the_log(tmp_path, equipment_csv, 
         # 로그는 그 실행 옆에 있어야 쓸모가 있다 - 결과만 있고 로그가 없으면
         # 왜 그렇게 나왔는지 되짚을 수 없다.
         log = (run_dir / "run.log").read_text(encoding="utf-8")
-        assert "[CONFIG]" in log and "[MODEL]" in log
+        # 그 실행의 설정이 로그 맨 앞에 있어야 한다 - 어느 모델이었는지 포함.
+        assert log.startswith("[CONFIG]")
+        assert model in log
         assert read(run_dir / "result.semantic.columns.json")["meta"]["status"] == "done"
 
 

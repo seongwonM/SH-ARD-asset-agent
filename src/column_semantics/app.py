@@ -13,13 +13,17 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import pandas as pd
+
 from column_semantics.adapters.csv_source import read_csv_safely
 from column_semantics.adapters.llm import make_llm_from_env, make_rate_limiter_from_env
 from column_semantics.adapters.prompts import FileSystemPrompts
+from column_semantics.core.clock import now_iso
 from column_semantics.core.llm_log import LLMLog
 from column_semantics.core.timeline import Timeline
 from column_semantics.pipeline.documents import PARTS
@@ -84,7 +88,6 @@ def analyze_csv(
     paths = output_paths(Path(output)) if output is not None else None
 
     df = read_csv_safely(csv_path)
-    print(f"[LOAD] {csv_path.name}: {len(df):,} rows x {len(df.columns)} cols", flush=True)
 
     timeline = Timeline()
     llm_log = LLMLog()
@@ -95,17 +98,22 @@ def analyze_csv(
     runner = StageRunner(stages=stages, skills=skills, llm=llm)
 
     settings = {
+        "started_at": now_iso(),
         "source_csv": str(csv_path),
         "row_count": int(len(df)),
         "column_count": int(len(df.columns)),
         "prompts_dir": str(prompt_dir),
         "skills_dir": str(skill_dir),
         "output_base": str(output) if output is not None else None,
+        "llm_model": getattr(llm, "model", ""),
         "llm_endpoint": os.getenv("LLM_API_ENDPOINT", ""),
         "requests_per_minute": rate_limiter.requests_per_minute,
         "max_concurrency": rate_limiter.max_concurrency,
+        "max_rounds": max_rounds,
+        "runtime": f"python {platform.python_version()} / pandas {pd.__version__}",
+        "env": env_snapshot(),
     }
-    _print_config(settings, model=getattr(llm, "model", ""), max_rounds=max_rounds)
+    _print_config(settings)
 
     config = PipelineConfig(
         max_rounds=max_rounds,
@@ -122,31 +130,56 @@ def analyze_csv(
     return documents
 
 
-def _print_config(settings: Dict[str, Any], model: str, max_rounds: int) -> None:
-    """이 실행이 무엇을 어떤 설정으로 도는지 맨 앞에 한 번 찍는다.
+# 로그와 meta에 실을 환경변수. 접두사로 잡아서, 나중에 새 설정을 추가해도
+# 여기 목록을 고치지 않아도 자동으로 따라온다.
+_ENV_PREFIXES = ("LLM_", "K8S_", "USE_PVC_CODE", "BUILD_SHA", "PYTHONPATH")
+# 값을 그대로 찍으면 안 되는 것들. 설정됐는지 여부만 남긴다.
+_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
-    로그만 남고 결과 파일이 없는 상황(죽은 배치, 잘린 PVC)에서도 무슨 조건이었는지
-    알 수 있어야 한다. API 키는 찍지 않는다.
+
+def env_snapshot() -> Dict[str, str]:
+    """이 실행이 실제로 받은 설정값. 비밀은 가리되 "설정은 됐다"는 남긴다."""
+    snapshot: Dict[str, str] = {}
+    for name, value in sorted(os.environ.items()):
+        if not name.startswith(_ENV_PREFIXES):
+            continue
+        if any(hint in name for hint in _SECRET_HINTS):
+            snapshot[name] = "***설정됨***" if value else ""
+        else:
+            snapshot[name] = value
+    return snapshot
+
+
+def _print_config(settings: Dict[str, Any]) -> None:
+    """이 실행이 무엇을 어떤 설정으로 도는지 맨 앞에 전부 찍는다.
+
+    로그만 남고 결과 파일이 없는 상황(죽은 배치, 잘린 PVC)에서도 조건을 알 수
+    있어야 한다. 그래서 "내가 정한 값"은 하나도 빠짐없이 여기 나온다 - 환경변수는
+    접두사로 싹 훑어 담기 때문에, 설정을 새로 만들어도 자동으로 찍힌다.
     """
-    print("[CONFIG] " + f"model={model}", flush=True)
-    print(f"[CONFIG] endpoint={settings['llm_endpoint']}", flush=True)
-    print(
-        f"[CONFIG] rpm={settings['requests_per_minute']} "
-        f"concurrency={settings['max_concurrency']} max_rounds={max_rounds} "
-        f"gap_rounds={MAX_GAP_ROUNDS} actions_per_column={MAX_ACTIONS_PER_COLUMN} "
-        f"group_columns={MAX_GROUP_COLUMNS}",
-        flush=True,
-    )
-    print(
-        f"[CONFIG] rows={settings['row_count']:,} cols={settings['column_count']} "
-        f"csv={settings['source_csv']}",
-        flush=True,
-    )
-    print(
-        f"[CONFIG] prompts={settings['prompts_dir']} skills={settings['skills_dir']} "
-        f"output={settings['output_base']}",
-        flush=True,
-    )
+    lines = [
+        ("started_at", settings["started_at"]),
+        ("model", settings["llm_model"]),
+        ("csv", settings["source_csv"]),
+        ("rows x cols", f"{settings['row_count']:,} x {settings['column_count']}"),
+        ("output", settings["output_base"] or "(파일로 쓰지 않음)"),
+        ("prompts", settings["prompts_dir"]),
+        ("skills", settings["skills_dir"]),
+        ("max_rounds", settings["max_rounds"]),
+        (
+            "gap_budget",
+            f"rounds={MAX_GAP_ROUNDS} actions_per_column={MAX_ACTIONS_PER_COLUMN} "
+            f"group_columns={MAX_GROUP_COLUMNS}",
+        ),
+        ("rpm / concurrency", f"{settings['requests_per_minute']} / {settings['max_concurrency']}"),
+        ("runtime", settings["runtime"]),
+    ]
+    print("[CONFIG] ==================== 실행 설정 ====================", flush=True)
+    for label, value in lines:
+        print(f"[CONFIG] {label:<20} {value}", flush=True)
+    for name, value in settings["env"].items():
+        print(f"[CONFIG] env {name:<24} {value}", flush=True)
+    print("[CONFIG] " + "=" * 52, flush=True)
 
 
 def write_documents(paths: Dict[str, Path], documents: Documents) -> None:

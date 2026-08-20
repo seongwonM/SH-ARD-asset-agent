@@ -201,6 +201,15 @@ def review_columns_parallel(
         reviews[col] = review
         if history is not None:
             history.record(col, "column_review", review, **(stage_info or {}))
+
+    malformed = [c for c, r in reviews.items() if r.get("malformed_verdict")]
+    if malformed:
+        print(
+            f"[REVIEW] 형식을 못 맞춘 응답 {len(malformed)}건 - 전부 pass로 처리됨: "
+            + ", ".join(malformed[:5])
+            + " (프롬프트/모델 확인 필요)",
+            flush=True,
+        )
     return reviews
 
 
@@ -231,6 +240,9 @@ def resolve_gaps(
     record: Dict[str, Any] = {
         "reviewed": sorted(reviews),
         "flagged": flagged,
+        # 형식을 못 맞춰 pass로 떨어진 컬럼. 이게 많으면 "검토가 다 통과시켰다"가
+        # 아니라 "검토 응답을 못 읽었다"는 뜻이다 - 둘은 조치가 다르다.
+        "malformed_reviews": sorted(c for c, r in reviews.items() if r.get("malformed_verdict")),
         "planner": None,
         "actions": [],
         "dropped": [],

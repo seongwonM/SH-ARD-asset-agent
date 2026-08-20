@@ -120,13 +120,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         return 2
 
+    # 이 실행에서 LLM_MODEL은 모델마다 덮어쓴다. 원래 무엇을 지정했는지가
+    # 로그와 meta에서 사라지지 않도록 따로 남긴다.
+    os.environ["LLM_MODELS_CONFIGURED"] = ",".join(models)
+
     failed: List[str] = []
-    for model in models:
+    for index, model in enumerate(models, start=1):
         os.environ["LLM_MODEL"] = model
         output = resolve_output(csv_path, model, args.output_root, args.output)
         # 배치일 때만 로그를 결과 옆에 남긴다. 로컬 단발 실행은 화면으로 충분하다.
         log_path = output.parent / "run.log" if args.output_root is not None else None
 
+        print(f"\n[MODEL] {model} ({index}/{len(models)})", flush=True)
         if not _run_one(csv_path, model, output, log_path, args):
             failed.append(model)
 
@@ -146,7 +151,6 @@ def _run_one(csv_path: Path, model: str, output: Path, log_path: Optional[Path],
 
 
 def _analyze(csv_path: Path, model: str, output: Path, args) -> bool:
-    print(f"[MODEL] {model}", flush=True)
     try:
         analyze_csv(
             csv_path=csv_path,

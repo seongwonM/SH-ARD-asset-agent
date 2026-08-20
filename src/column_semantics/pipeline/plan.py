@@ -131,14 +131,20 @@ def sanitize_review(review: Any) -> Dict[str, Any]:
     `gap`/`cites`는 내용을 검사하지 않고 그대로 싣는다.
     """
     if not isinstance(review, dict):
-        return {"verdict": "pass", "gap": "", "cites": []}
+        return {"verdict": "pass", "gap": "", "cites": [], "malformed_verdict": repr(review)[:80]}
     verdict = review.get("verdict")
     cites = review.get("cites")
-    return {
+    result = {
         "verdict": verdict if verdict in {"pass", "needs_work"} else "pass",
         "gap": review.get("gap") or "",
         "cites": cites if isinstance(cites, list) else [],
     }
+    if verdict not in {"pass", "needs_work"}:
+        # pass로 처리하되 그 사실을 남긴다. 모델이 형식을 못 맞추면 모든 컬럼이
+        # 조용히 통과해 planner가 영영 안 도는데, 기록이 없으면 "왜 계획이 안
+        # 서지"를 프롬프트가 아니라 파이프라인에서 찾게 된다.
+        result["malformed_verdict"] = repr(verdict)[:80]
+    return result
 
 
 def sanitize_gap_actions(

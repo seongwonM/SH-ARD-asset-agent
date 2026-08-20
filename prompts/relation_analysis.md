@@ -16,6 +16,17 @@ Prefer direct structural evidence over weak correlation:
 Treat prior column meanings as hypotheses.
 A high-confidence candidate may be revised when cross-column evidence contradicts it.
 
+# Value overlap tells you about containment, not correlation
+
+`value_overlap` on a pair reports how much of one column's values appear in the other, by row and by distinct
+value. Read it as containment: `a_in_b_row_ratio` near 1 with `b_in_a_row_ratio` well below 1 means every value of
+`a` exists in `b` but not the reverse - the shape of a code column against its master list, a child against its
+parent, or a subset of a larger population. Near 1 in both directions means the two draw on the same value set,
+which is a different claim (same concept, possibly duplicated or renamed).
+
+This is the evidence for hierarchy and reference relationships, and it works on codes and identifiers where
+correlation says nothing. Use it before falling back on names alone.
+
 # Suspected exact arithmetic relationships
 `pearson_corr` and `b_minus_a` tell you two numeric columns move together, but not the exact relationship, and you
 cannot compute one yourself — you don't have row-level data, only aggregated evidence. If a pair looks like it might

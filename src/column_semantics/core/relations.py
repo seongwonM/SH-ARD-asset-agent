@@ -84,6 +84,28 @@ def relation_evidence(
                     "negative_delta_ratio": float((delta < 0).mean()),
                 }
 
+        # Value overlap (inclusion dependency). 한쪽 값 집합이 다른 쪽에 담기는지는
+        # 코드-마스터, 부모-자식, 같은 개념의 다른 표기를 가르는 가장 직접적인
+        # 증거인데 지금까지 계산하지 않았다 - 그래서 관계 해석이 상관계수와
+        # 시간 순서에만 기대고 있었다. 행 기준과 고유값 기준을 같이 낸다:
+        # 행 기준은 "실제로 얼마나 덮이는가", 고유값 기준은 "값의 종류가 담기는가"다.
+        if av.nunique() <= 5000 and bv.nunique() <= 5000:
+            a_str, b_str = av.astype(str), bv.astype(str)
+            a_set, b_set = set(a_str.unique()), set(b_str.unique())
+            shared = a_set & b_set
+            a_in_b_rows = float(a_str.isin(b_set).mean())
+            b_in_a_rows = float(b_str.isin(a_set).mean())
+            if max(a_in_b_rows, b_in_a_rows) >= 0.5:
+                evidence["value_overlap"] = {
+                    "a_in_b_row_ratio": a_in_b_rows,
+                    "b_in_a_row_ratio": b_in_a_rows,
+                    "a_in_b_unique_ratio": len(shared) / len(a_set) if a_set else 0.0,
+                    "b_in_a_unique_ratio": len(shared) / len(b_set) if b_set else 0.0,
+                    "a_unique": int(len(a_set)),
+                    "b_unique": int(len(b_set)),
+                    "shared_unique": int(len(shared)),
+                }
+
         # Mapping consistency for hierarchy / functional dependency.
         # b -> a: for each b, does it map to one a?
         if av.nunique() <= 5000 and bv.nunique() <= 5000:

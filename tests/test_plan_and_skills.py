@@ -70,6 +70,16 @@ def test_malformed_review_counts_as_pass():
     assert sanitize_review({"verdict": "needs_work"})["verdict"] == "needs_work"
 
 
+def test_unreadable_verdict_is_passed_but_recorded():
+    """모델이 형식을 못 맞추면 전 컬럼이 조용히 통과해 planner가 영영 안 돈다.
+    통과시키되 그 사실을 남겨야 원인을 프롬프트에서 찾는다."""
+    review = sanitize_review({"verdict": "더 봐야 함", "gap": "..."})
+    assert review["verdict"] == "pass"
+    assert "더 봐야 함" in review["malformed_verdict"]
+    # 제대로 온 응답에는 그 표시가 없다.
+    assert "malformed_verdict" not in sanitize_review({"verdict": "needs_work"})
+
+
 def test_review_reason_is_carried_through_untouched():
     """근거는 검증하지 않는다 - 기록해두고 나중에 실제 값과 대조할 수 있게만 한다."""
     review = sanitize_review(

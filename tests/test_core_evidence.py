@@ -76,3 +76,23 @@ def test_relation_groups_prefer_llm_result_over_raw_pairwise():
     )
     assert sorted(groups[0]) == ["b", "c"]
     assert ungrouped == ["a"]
+
+
+def test_value_overlap_shows_containment_not_correlation():
+    """코드 컬럼과 마스터의 관계는 상관계수로는 안 잡힌다 - 값이 담기는지로 잡는다."""
+    df = pd.DataFrame(
+        {
+            "equip_id": ["EQ-1", "EQ-2", "EQ-3", "EQ-1", "EQ-2", "EQ-3"],
+            "equip_master": ["EQ-1", "EQ-2", "EQ-3", "EQ-4", "EQ-5", "EQ-6"],
+        }
+    )
+    evidence = build_table_evidence(df)
+    pair = next(
+        p for p in evidence["relation_evidence"]["pairwise"]
+        if set(p["columns"]) == {"equip_id", "equip_master"}
+    )
+    overlap = pair["value_overlap"]
+    # equip_id의 값은 전부 마스터에 있고, 마스터에는 쓰이지 않은 값이 더 있다.
+    assert overlap["a_in_b_row_ratio"] == 1.0
+    assert overlap["b_in_a_row_ratio"] < 1.0
+    assert overlap["shared_unique"] == 3

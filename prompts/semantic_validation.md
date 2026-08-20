@@ -82,6 +82,36 @@ independently here. If you re-derive the bound from the same observed min/max th
 used to pick that scale, the check is circular (guaranteed to pass, tests nothing); relying on the already-stated
 `unit` at least tests that the two stages agree, which a genuine misinterpretation would break.
 
+# The meaning must say what the values are
+
+A description that only restates the column's shape is not an interpretation, and must not pass. "1, 2, 3으로
+이루어진 범주형 변수", "숫자 코드", "식별자 문자열" describe what anyone can see from the profile; they leave the
+reader knowing nothing they did not already know.
+
+For every column you validate, ask what the values stand for:
+
+- **Coded / categorical columns**: what does each level mean, or at minimum what kind of thing is being coded
+  (공정 단계? 설비 상태? 불량 유형?). A meaning that lists the levels without saying what they denote fails this.
+- **Measures**: of what, in what unit, measured where. "수치 값" is not a meaning.
+- **Identifiers**: identifying which entity. "식별자" is not a meaning.
+- **Timestamps**: the time of which event.
+
+Raise these as `checks` entries with `status: "fail"` and an `issue` naming exactly what is unstated, plus a
+`revision_requests` entry for that column. They are as much a validation failure as a contradicted constraint -
+an interpretation nobody can act on is not a correct one.
+
+**Except when the interpretation already admits it.** If that column's `column_interpretation` carries a
+`domain_gap` (it states what it could not identify and what source would settle it), the work has been done
+honestly and there is nothing a rerun can fix without that source. Record it as `status: "warning"` with the
+missing source repeated in `issue`, not as `fail` - a fail would spend a revision round re-deriving the same
+unanswerable question.
+
+# Be conservative
+
+When you are unsure whether a claim holds, do not pass it. `pass` means "I checked this and it holds", not
+"nothing obviously wrong jumped out". An unchecked claim marked `pass` is worse than one marked `warning`: it
+ends the conversation about that column, and every downstream step then treats a guess as settled.
+
 # Re-validation after revision
 If the input contains `revision_feedback.checks` from a prior round, re-test each of those exact
 `hypothesis`/`columns` pairs first, against the (possibly revised) column_interpretation/relation_analysis for this
