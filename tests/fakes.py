@@ -48,22 +48,32 @@ class FakeLLM:
         handler = getattr(self, f"_on_{head}", None)
         if handler is None:
             raise AssertionError(f"FakeLLM이 모르는 label: {label}")
-        result = handler(label, payload)
-        if self.llm_log is not None:
-            self.llm_log.add(
-                prompt_ref=self.llm_log.register_prompt(
-                    str((context or {}).get("name") or label), system_prompt
-                ),
-                payload=payload,
-                response_text=json.dumps(result, ensure_ascii=False),
-                response=result,
-                # 진짜 어댑터는 label도 기록에 넣는다 - 문서 모양이 어긋나면 안 된다.
-                context={"label": label, **(context or {})},
-                status="ok",
-                attempt=1,
-                model=self.model,
-            )
+        try:
+            result = handler(label, payload)
+        except Exception as e:
+            # 진짜 어댑터는 실패한 호출도 기록하고 나서 올려보낸다. 가짜가 그냥
+            # 던져버리면 "죽은 호출이 파일에 남는가"를 테스트로 확인할 수 없다.
+            self._record(label, system_prompt, payload, context, status="error",
+                         response_text=None, response=None, error=f"{type(e).__name__}: {e}")
+            raise
+        self._record(label, system_prompt, payload, context, status="ok",
+                     response_text=json.dumps(result, ensure_ascii=False), response=result)
         return result
+
+    def _record(self, label, system_prompt, payload, context, **fields) -> None:
+        if self.llm_log is None:
+            return
+        self.llm_log.add(
+            prompt_ref=self.llm_log.register_prompt(
+                str((context or {}).get("name") or label), system_prompt
+            ),
+            payload=payload,
+            # 진짜 어댑터는 label도 기록에 넣는다 - 문서 모양이 어긋나면 안 된다.
+            context={"label": label, **(context or {})},
+            attempt=1,
+            model=self.model,
+            **fields,
+        )
 
     # -- 편의 ----------------------------------------------------------
 

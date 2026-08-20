@@ -57,13 +57,15 @@ def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
 
 
 def test_files_survive_a_mid_run_failure(tmp_path, equipment_csv, monkeypatch):
-    """중간에 죽어도 그때까지의 문서는 파일에 남아 있고, meta.status로 미완주가 드러난다."""
+    """중간에 죽어도 그때까지의 문서가 파일에 남고, 죽은 이유와 죽인 호출까지 남는다."""
 
     class Exploding(FakeLLM):
         def _on_gap_planner(self, label, payload):
             raise RuntimeError("엔드포인트 죽음")
 
-    monkeypatch.setattr(app, "make_llm_from_env", lambda **kwargs: Exploding())
+    monkeypatch.setattr(
+        app, "make_llm_from_env", lambda **kwargs: Exploding(llm_log=kwargs["llm_log"])
+    )
     out = tmp_path / "result.semantic.json"
 
     try:
@@ -80,10 +82,18 @@ def test_files_survive_a_mid_run_failure(tmp_path, equipment_csv, monkeypatch):
 
     paths = app.output_paths(out)
     columns = read(paths["columns"])
-    assert columns["meta"]["status"] == "in_progress"
+    assert columns["meta"]["status"] == "failed"
+    assert "엔드포인트 죽음" in columns["meta"]["error"]
     # 죽기 전까지 계산된 해석은 남아 있어야 한다.
     assert columns["columns"]["power_value"]["final"]["interpretation"]
     assert read(paths["rulebase"])["column_profiles"]
+
+    # 죽인 그 호출도 파일에 남아야 한다 - 마지막 체크포인트 이후의 기록이
+    # 통째로 사라지면 무엇 때문에 멈췄는지 파일만 보고는 알 수 없다.
+    calls = read(paths["llm_calls"])["calls"]
+    crashed = [c for c in calls if c["status"] == "error"]
+    assert [c["name"] for c in crashed] == ["gap_planner"]
+    assert "엔드포인트 죽음" in crashed[0]["error"]
 
 
 def test_default_dirs_point_at_the_repo_folders():

@@ -448,10 +448,15 @@ def run_pipeline(
     joint_findings: List[Dict[str, Any]] = []
     planning: Dict[str, Any] = {"first_pass": {}, "gap_rounds": [], "replans": []}
 
-    def build_docs(status: str, validation_status: str = "not_yet_run") -> Documents:
+    def build_docs(
+        status: str,
+        validation_status: str = "not_yet_run",
+        error: Optional[str] = None,
+    ) -> Documents:
         return build_documents(
             meta={
                 **config.meta,
+                **({"error": error} if error else {}),
                 "llm_model": getattr(runner.llm, "model", ""),
                 # 이 실행이 어떤 예산으로 돌았는지. 결과를 나중에 비교할 때 예산이
                 # 바뀐 건지 모델이 다르게 답한 건지 구분하려면 같이 남아야 한다.
@@ -561,170 +566,178 @@ def run_pipeline(
         print(f"{label} semantic_validation 완료 ({time.time() - started:.1f}초)", flush=True)
         checkpoint()
 
-    # -- 1차 pass ------------------------------------------------------
-    has_pairwise = bool(evidence.get("relation_evidence", {}).get("pairwise"))
-    first_pass = first_pass_stages(has_pairwise)
-    planning["first_pass"] = {
-        "stages": first_pass,
-        "source": "fixed_order",
-        "relation_analysis_included": has_pairwise,
-        "reason": (
-            "pairwise 증거가 있어 relation_analysis를 포함했다"
-            if has_pairwise
-            else "pairwise 증거가 없어 relation_analysis를 생략했다"
-        ),
-    }
-    print(
-        "[PLAN] 1차 고정 순서:",
-        " -> ".join(first_pass),
-        "" if has_pairwise else "(pairwise 증거 없어 relation_analysis 생략)",
-        flush=True,
-    )
-
-    action_counts: Dict[str, int] = {}
-    done_actions: Set[Tuple[str, Tuple[str, ...]]] = set()
-
-    def gap_round(round_no: int, columns_to_review: List[str]) -> Dict[str, Any]:
-        """검토 -> (넘어온 게 있으면) planner -> 실행. 한 라운드가 여기 전부다."""
-        with timeline.measure(event="stage", phase="exec", stage="column_review", round=round_no):
-            with runner.stage(stage="gap", round=round_no, phase="exec"):
-                reviews = review_columns_parallel(
-                    runner,
-                    evidence,
-                    results,
-                    max_workers,
-                    columns=columns_to_review,
-                    history=history,
-                    stage_info=_stage_info("exec", round_no),
-                )
-        checkpoint()
-
-        with timeline.measure(event="gap_resolution", round=round_no) as entry:
-            with runner.stage(stage="gap", round=round_no, phase="exec"):
-                record = resolve_gaps(
-                    df,
-                    runner,
-                    evidence,
-                    results,
-                    max_workers,
-                    reviews=reviews,
-                    probe_log=probe_log,
-                    joint_findings=joint_findings,
-                    history=history,
-                    stage_info=_stage_info("exec", round_no),
-                    action_counts=action_counts,
-                    done_actions=done_actions,
-                )
-            entry["flagged"] = len(record["flagged"])
-            entry["actions"] = len(record["actions"])
-        record["round"] = round_no
-        planning["gap_rounds"].append(record)
-        checkpoint()
-        return record
-
-    with runner.stage(stage="first_pass", round=1):
-        exec_stage("semantic_type", phase="exec")
-        exec_columns(phase="exec", columns=all_columns)
-
-    # -- 검토 -> gap 보충 -------------------------------------------------
-    # 보완이 컬럼 해석을 바꾸므로 relation_analysis보다 먼저 돈다 - 관계 분석이
-    # 바뀌기 전 해석을 근거로 삼으면 그만큼 낡은 판단이 된다.
-    touched = gap_round(1, all_columns)
-    for round_no in range(2, MAX_GAP_ROUNDS + 1):
-        # 다시 검토하는 것은 이번 라운드에 실제로 바뀐 컬럼뿐이다. 손대지 않은
-        # 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다.
-        if not touched["changed"]:
-            break
-        touched = gap_round(round_no, touched["changed"])
-
-    if "relation_analysis" in first_pass:
-        with runner.stage(stage="first_pass", round=1):
-            exec_stage("relation_analysis", phase="exec")
-
-    # -- 검증 -> 마무리 --------------------------------------------------
-    with runner.stage(stage="validation", round=1):
-        exec_validation(phase="exec")
-    with runner.stage(stage="first_pass", round=1):
-        exec_stage("table_context", phase="exec")
-
-    # -- 수정 라운드 -----------------------------------------------------
-    # 검증이 needs_revision이면 replan으로 필요한 skill만 다시 돈다. max_rounds까지
-    # 반복해도 여전히 실패면 meta.validation_status로 명시한다 - 실패한 채
-    # "done"으로만 남기지 않는다.
-    rounds_run = 1
-    for round_idx in range(2, config.max_rounds + 1):
-        rounds_run = round_idx
-        validation = results.get("semantic_validation") or {}
-        if validation.get("overall_status") != "needs_revision":
-            break
-
-        # 재시도 힌트에는 실측값을 붙여서 보낸다 - 반증의 근거가 곧 힌트다.
-        failed_checks = [
-            x for x in validation.get("checks", []) if x.get("status") in {"warning", "fail"}
-        ]
-        feedback = {
-            "revision_requests": validation.get("revision_requests", []),
-            "checks": with_measurements(failed_checks, probe_log),
+    # 죽는 순간까지의 기록을 반드시 파일로 내보낸다. 마지막 체크포인트 이후의
+    # 호출(특히 죽인 그 호출)은 메모리에만 있어서, 여기서 한 번 더 쓰지 않으면
+    # 실패 원인이 담긴 기록이 통째로 사라진다.
+    try:
+        # -- 1차 pass ------------------------------------------------------
+        has_pairwise = bool(evidence.get("relation_evidence", {}).get("pairwise"))
+        first_pass = first_pass_stages(has_pairwise)
+        planning["first_pass"] = {
+            "stages": first_pass,
+            "source": "fixed_order",
+            "relation_analysis_included": has_pairwise,
+            "reason": (
+                "pairwise 증거가 있어 relation_analysis를 포함했다"
+                if has_pairwise
+                else "pairwise 증거가 없어 relation_analysis를 생략했다"
+            ),
         }
-        with runner.stage(stage="replan", round=round_idx, phase="re-exec"):
-            replan = runner.plan(evidence, previous_results=results, validation_feedback=feedback)
-        steps = revision_steps(replan["plan"])
-
-        planning["replans"].append(
-            {
-                "round": round_idx,
-                "reason": replan["plan"].get("reason", ""),
-                "raw": replan["raw"],
-                "steps": steps,
-                "trigger": {
-                    "failed_checks": [c.get("check_id") for c in failed_checks],
-                    "revision_requests": len(feedback["revision_requests"]),
-                },
-            }
-        )
-        print(f"[PLAN {round_idx}]", " -> ".join(step["stage"] for step in steps), flush=True)
-
-        for step in steps:
-            stage = step["stage"]
-            if stage == "column_interpretation":
-                exec_columns(
-                    phase="re-exec",
-                    columns=step.get("focus") or all_columns,
-                    round_idx=round_idx,
-                    revision_feedback=feedback,
-                    existing=(results.get("column_interpretation") or {}).get("columns", {}),
-                )
-            elif stage == "semantic_validation":
-                exec_validation(phase="re-exec", round_idx=round_idx, revision_feedback=feedback)
-            else:
-                exec_stage(
-                    stage,
-                    phase="re-exec",
-                    round_idx=round_idx,
-                    focus=step.get("focus", []),
-                    revision_feedback=feedback,
-                )
-
-        # 수정 후에는 항상 table_context를 다시 만든다.
-        exec_stage(
-            "table_context", phase="re-exec", round_idx=round_idx, revision_feedback=feedback
-        )
-
-    final_validation = results.get("semantic_validation") or {}
-    validation_status = "pass"
-    if final_validation.get("overall_status") == "needs_revision":
-        unresolved = [
-            c for c in final_validation.get("checks", []) if c.get("status") in {"warning", "fail"}
-        ]
-        validation_status = "unresolved_after_max_rounds"
         print(
-            f"[VALIDATION] max_rounds({config.max_rounds}) 도달 - {rounds_run}라운드까지 돌았지만 "
-            f"여전히 needs_revision. 미해결 {len(unresolved)}건: "
-            + "; ".join((c.get("hypothesis") or "")[:60] for c in unresolved[:5]),
+            "[PLAN] 1차 고정 순서:",
+            " -> ".join(first_pass),
+            "" if has_pairwise else "(pairwise 증거 없어 relation_analysis 생략)",
             flush=True,
         )
 
-    return build_docs("done", validation_status=validation_status)
+        action_counts: Dict[str, int] = {}
+        done_actions: Set[Tuple[str, Tuple[str, ...]]] = set()
+
+        def gap_round(round_no: int, columns_to_review: List[str]) -> Dict[str, Any]:
+            """검토 -> (넘어온 게 있으면) planner -> 실행. 한 라운드가 여기 전부다."""
+            with timeline.measure(event="stage", phase="exec", stage="column_review", round=round_no):
+                with runner.stage(stage="gap", round=round_no, phase="exec"):
+                    reviews = review_columns_parallel(
+                        runner,
+                        evidence,
+                        results,
+                        max_workers,
+                        columns=columns_to_review,
+                        history=history,
+                        stage_info=_stage_info("exec", round_no),
+                    )
+            checkpoint()
+
+            with timeline.measure(event="gap_resolution", round=round_no) as entry:
+                with runner.stage(stage="gap", round=round_no, phase="exec"):
+                    record = resolve_gaps(
+                        df,
+                        runner,
+                        evidence,
+                        results,
+                        max_workers,
+                        reviews=reviews,
+                        probe_log=probe_log,
+                        joint_findings=joint_findings,
+                        history=history,
+                        stage_info=_stage_info("exec", round_no),
+                        action_counts=action_counts,
+                        done_actions=done_actions,
+                    )
+                entry["flagged"] = len(record["flagged"])
+                entry["actions"] = len(record["actions"])
+            record["round"] = round_no
+            planning["gap_rounds"].append(record)
+            checkpoint()
+            return record
+
+        with runner.stage(stage="first_pass", round=1):
+            exec_stage("semantic_type", phase="exec")
+            exec_columns(phase="exec", columns=all_columns)
+
+        # -- 검토 -> gap 보충 -------------------------------------------------
+        # 보완이 컬럼 해석을 바꾸므로 relation_analysis보다 먼저 돈다 - 관계 분석이
+        # 바뀌기 전 해석을 근거로 삼으면 그만큼 낡은 판단이 된다.
+        touched = gap_round(1, all_columns)
+        for round_no in range(2, MAX_GAP_ROUNDS + 1):
+            # 다시 검토하는 것은 이번 라운드에 실제로 바뀐 컬럼뿐이다. 손대지 않은
+            # 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다.
+            if not touched["changed"]:
+                break
+            touched = gap_round(round_no, touched["changed"])
+
+        if "relation_analysis" in first_pass:
+            with runner.stage(stage="first_pass", round=1):
+                exec_stage("relation_analysis", phase="exec")
+
+        # -- 검증 -> 마무리 --------------------------------------------------
+        with runner.stage(stage="validation", round=1):
+            exec_validation(phase="exec")
+        with runner.stage(stage="first_pass", round=1):
+            exec_stage("table_context", phase="exec")
+
+        # -- 수정 라운드 -----------------------------------------------------
+        # 검증이 needs_revision이면 replan으로 필요한 skill만 다시 돈다. max_rounds까지
+        # 반복해도 여전히 실패면 meta.validation_status로 명시한다 - 실패한 채
+        # "done"으로만 남기지 않는다.
+        rounds_run = 1
+        for round_idx in range(2, config.max_rounds + 1):
+            rounds_run = round_idx
+            validation = results.get("semantic_validation") or {}
+            if validation.get("overall_status") != "needs_revision":
+                break
+
+            # 재시도 힌트에는 실측값을 붙여서 보낸다 - 반증의 근거가 곧 힌트다.
+            failed_checks = [
+                x for x in validation.get("checks", []) if x.get("status") in {"warning", "fail"}
+            ]
+            feedback = {
+                "revision_requests": validation.get("revision_requests", []),
+                "checks": with_measurements(failed_checks, probe_log),
+            }
+            with runner.stage(stage="replan", round=round_idx, phase="re-exec"):
+                replan = runner.plan(evidence, previous_results=results, validation_feedback=feedback)
+            steps = revision_steps(replan["plan"])
+
+            planning["replans"].append(
+                {
+                    "round": round_idx,
+                    "reason": replan["plan"].get("reason", ""),
+                    "raw": replan["raw"],
+                    "steps": steps,
+                    "trigger": {
+                        "failed_checks": [c.get("check_id") for c in failed_checks],
+                        "revision_requests": len(feedback["revision_requests"]),
+                    },
+                }
+            )
+            print(f"[PLAN {round_idx}]", " -> ".join(step["stage"] for step in steps), flush=True)
+
+            for step in steps:
+                stage = step["stage"]
+                if stage == "column_interpretation":
+                    exec_columns(
+                        phase="re-exec",
+                        columns=step.get("focus") or all_columns,
+                        round_idx=round_idx,
+                        revision_feedback=feedback,
+                        existing=(results.get("column_interpretation") or {}).get("columns", {}),
+                    )
+                elif stage == "semantic_validation":
+                    exec_validation(phase="re-exec", round_idx=round_idx, revision_feedback=feedback)
+                else:
+                    exec_stage(
+                        stage,
+                        phase="re-exec",
+                        round_idx=round_idx,
+                        focus=step.get("focus", []),
+                        revision_feedback=feedback,
+                    )
+
+            # 수정 후에는 항상 table_context를 다시 만든다.
+            exec_stage(
+                "table_context", phase="re-exec", round_idx=round_idx, revision_feedback=feedback
+            )
+
+        final_validation = results.get("semantic_validation") or {}
+        validation_status = "pass"
+        if final_validation.get("overall_status") == "needs_revision":
+            unresolved = [
+                c for c in final_validation.get("checks", []) if c.get("status") in {"warning", "fail"}
+            ]
+            validation_status = "unresolved_after_max_rounds"
+            print(
+                f"[VALIDATION] max_rounds({config.max_rounds}) 도달 - {rounds_run}라운드까지 돌았지만 "
+                f"여전히 needs_revision. 미해결 {len(unresolved)}건: "
+                + "; ".join((c.get("hypothesis") or "")[:60] for c in unresolved[:5]),
+                flush=True,
+            )
+
+        return build_docs("done", validation_status=validation_status)
+    except BaseException as e:  # noqa: BLE001 - 기록만 남기고 그대로 올려보낸다
+        if config.on_checkpoint is not None:
+            config.on_checkpoint(build_docs("failed", error=f"{type(e).__name__}: {e}"))
+        raise
 
 
 def _record_validation(
