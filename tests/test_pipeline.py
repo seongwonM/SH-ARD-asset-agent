@@ -507,6 +507,43 @@ def test_a_dead_column_does_not_throw_away_the_others(equipment_df):
     assert "컨텍스트 초과" in failure["value"]["error"]
 
 
+def test_columns_land_in_the_results_as_they_finish(equipment_df):
+    """긴 단계 도중에 프로세스가 사라져도(OOM 등) 끝난 컬럼은 파일에 남아야 한다.
+    단계가 통째로 끝나야 저장되면 그때까지의 호출이 전부 헛돈다."""
+    from column_semantics.pipeline import orchestrator as orch
+
+    seen = []
+    captured = {}
+
+    class Watcher(FakeLLM):
+        def _on_column_interpretation(self, label, payload):
+            slot = captured.get("results", {}).get("column_interpretation")
+            seen.append(len((slot or {}).get("columns", {})) if slot is not None else None)
+            return super()._on_column_interpretation(label, payload)
+
+    original = orch.interpret_columns_parallel
+
+    def spy(runner_, evidence, results, *args, **kwargs):
+        captured["results"] = results
+        return original(runner_, evidence, results, *args, **kwargs)
+
+    orch.interpret_columns_parallel = spy
+    try:
+        run_pipeline(
+            equipment_df,
+            make_runner(Watcher(refute_first_validation=False)),
+            config=PipelineConfig(max_rounds=1, max_workers=1),
+        )
+    finally:
+        orch.interpret_columns_parallel = original
+
+    # 결과 슬롯은 첫 컬럼이 시작하기 전부터 존재하고(None이 아니고),
+    assert seen[0] == 0
+    # 뒤로 갈수록 채워진다 - 마지막 컬럼이 도는 시점엔 앞의 것들이 이미 들어 있다.
+    assert seen == sorted(seen)
+    assert seen[-1] >= 1
+
+
 def test_checkpoint_is_written_as_each_skill_finishes(equipment_df):
     saved = []
     run_pipeline(

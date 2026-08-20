@@ -86,7 +86,10 @@ def _parallel(max_workers: int, jobs: List[Any], fn: Callable[[Any], Any]) -> Di
 
 
 def _parallel_collect(
-    max_workers: int, jobs: List[Any], fn: Callable[[Any], Any]
+    max_workers: int,
+    jobs: List[Any],
+    fn: Callable[[Any], Any],
+    on_each: Optional[Callable[[int, Any, Optional[BaseException]], None]] = None,
 ) -> Tuple[Dict[int, Any], Dict[int, BaseException]]:
     """병렬 실행하되 성공한 것과 실패한 것을 갈라서 돌려준다.
 
@@ -104,6 +107,10 @@ def _parallel_collect(
                 outputs[index] = future.result()
             except BaseException as e:  # noqa: BLE001 - 갈라 담고 호출부가 결정한다
                 errors[index] = e
+            if on_each is not None:
+                # 완료되는 대로 값을 함께 넘긴다. 여기(메인 스레드)에서만 불리므로
+                # 호출부는 락 없이 결과를 갱신해도 된다.
+                on_each(index, outputs.get(index), errors.get(index))
     return outputs, errors
 
 
@@ -117,6 +124,7 @@ def interpret_columns_parallel(
     existing: Optional[Dict[str, Any]] = None,
     history: Optional[ColumnHistory] = None,
     stage_info: Optional[Dict[str, Any]] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, Any]:
     """columns 각각에 대해 column_interpretation을 병렬 호출한다. existing이 있으면
     (재검증 라운드에서 focus로 좁힌 경우) 그 위에 columns만 덮어쓰고 나머지 컬럼은
@@ -124,24 +132,33 @@ def interpret_columns_parallel(
     merged: Dict[str, Any] = dict(existing or {})
 
     print(f"[PARALLEL] column_interpretation {len(columns)}개 컬럼 병렬 실행", flush=True)
+    document = {"columns": merged}
+    # 결과 슬롯을 먼저 걸어둔다. 컬럼이 끝나는 대로 여기 쌓이므로, 이 단계 도중에
+    # 찍히는 체크포인트와 죽을 때 쓰이는 문서가 "그때까지 끝난 컬럼"을 담는다.
+    # 예전에는 단계가 통째로 끝나야 한 번에 들어가서, 40개 중 39개를 해석한
+    # 시점에 프로세스가 사라지면 파일에는 전부 null만 남았다.
+    results["column_interpretation"] = document
+    done = 0
+
+    def absorb(i: int, value: Any, error: Optional[BaseException]) -> None:
+        nonlocal done
+        done += 1
+        if error is None:
+            col = columns[i]
+            before = merged.get(col)
+            merged[col] = value
+            if history is not None:
+                _record(history, col, "column_interpretation", before, value, stage_info)
+        if on_progress is not None:
+            on_progress(done, len(columns))
+
     outputs, errors = _parallel_collect(
         max_workers,
         columns,
         lambda col: runner.interpret_column(col, evidence, revision_feedback),
+        on_each=absorb,
     )
-    for i, col in enumerate(columns):
-        if i not in outputs:
-            continue
-        before = merged.get(col)
-        merged[col] = outputs[i]
-        if history is not None:
-            _record(history, col, "column_interpretation", before, outputs[i], stage_info)
-
-    document = {"columns": merged}
     if errors:
-        # 살아남은 해석을 결과 슬롯에 먼저 넣는다. 그래야 죽을 때 쓰이는 문서에
-        # 39개가 남고, 실패한 컬럼만 비어 있는 상태로 파일에 남는다.
-        results["column_interpretation"] = document
         failed = [columns[i] for i in sorted(errors)]
         for i in sorted(errors):
             col = columns[i]
@@ -552,9 +569,22 @@ def run_pipeline(
             llm_log=llm_log,
         )
 
-    def checkpoint() -> None:
-        if config.on_checkpoint is not None:
-            config.on_checkpoint(build_docs("in_progress"))
+    last_checkpoint = [0.0]
+
+    def checkpoint(min_interval: float = 0.0) -> None:
+        """진행 상황을 파일로 내보낸다.
+
+        min_interval을 주면 그 간격 안에서는 건너뛴다 - 컬럼이 끝날 때마다 문서
+        5벌을 다시 쓰면 컬럼 수만큼 PVC I/O가 늘어난다. 단계 경계에서는 항상
+        쓰고(min_interval=0), 긴 단계 도중에는 드문드문 쓴다.
+        """
+        if config.on_checkpoint is None:
+            return
+        now = time.time()
+        if min_interval and now - last_checkpoint[0] < min_interval:
+            return
+        last_checkpoint[0] = now
+        config.on_checkpoint(build_docs("in_progress"))
 
     def exec_stage(stage: str, phase: str, round_idx: Optional[int] = None, **kwargs: Any) -> None:
         label = "[EXEC]" if phase == "exec" else "[RE-EXEC]"
@@ -569,6 +599,14 @@ def run_pipeline(
         )
         print(f"{label} {stage} 완료 ({time.time() - started:.1f}초)", flush=True)
         checkpoint()
+
+    def _on_column_done(done: int, total: int) -> None:
+        # 컬럼 수가 많으면 이 단계 하나가 몇 분이다. 그동안 파일이 비어 있으면
+        # "돌고 있는지 멈춘 건지"를 알 수 없고, 프로세스가 예외 없이 사라지면
+        # (OOM, 강제 종료) 그때까지의 해석이 통째로 날아간다.
+        if done % 10 == 0 or done == total:
+            print(f"[PARALLEL] column_interpretation {done}/{total} 완료", flush=True)
+        checkpoint(min_interval=15.0)
 
     def exec_columns(phase: str, columns: List[str], round_idx: Optional[int] = None, **kwargs: Any) -> None:
         label = "[EXEC]" if phase == "exec" else "[RE-EXEC]"
@@ -586,6 +624,7 @@ def run_pipeline(
                     columns=columns,
                     history=history,
                     stage_info=_stage_info(phase, round_idx),
+                    on_progress=_on_column_done,
                     **kwargs,
                 )
         print(f"{label} column_interpretation 완료 ({time.time() - started:.1f}초)", flush=True)
