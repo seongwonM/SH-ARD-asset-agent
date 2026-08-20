@@ -42,13 +42,13 @@ def test_records_prompt_payload_and_raw_response():
         "# semantic_type 프롬프트",
         {"table": {"columns": ["a"]}},
         label="semantic_type",
-        context={"skill": "semantic_type", "phase": "exec", "round": 1},
+        context={"name": "semantic_type", "phase": "exec", "round": 1},
     )
 
     call = log.calls()[0]
     assert call["seq"] == 1
     assert call["status"] == "ok"
-    assert call["skill"] == "semantic_type"
+    assert call["name"] == "semantic_type"
     assert call["phase"] == "exec"
     assert call["input"] == {"table": {"columns": ["a"]}}
     assert call["output_text"] == '{"ok": true}'
@@ -65,7 +65,7 @@ def test_same_prompt_is_stored_once_across_columns():
             "# column_interpretation 프롬프트",
             {"target_column": column},
             label=f"column_interpretation:{column}",
-            context={"skill": "column_interpretation", "column": column},
+            context={"name": "column_interpretation", "column": column},
         )
 
     assert len(log.calls()) == 2

@@ -94,7 +94,7 @@ class OpenAICompatibleLLM:
         tag = f"[LLM:{label}]" if label else "[LLM]"
         context = {"label": label, **(context or {})}
         prompt_ref = (
-            self.llm_log.register_prompt(str(context.get("skill") or label or "unnamed"), system_prompt)
+            self.llm_log.register_prompt(str(context.get("name") or label or "unnamed"), system_prompt)
             if self.llm_log is not None
             else ""
         )

@@ -17,15 +17,18 @@ from typing import Any, Dict, Optional
 
 from column_semantics.adapters.csv_source import read_csv_safely
 from column_semantics.adapters.llm import make_llm_from_env, make_rate_limiter_from_env
-from column_semantics.adapters.skills import FileSystemSkillLibrary
+from column_semantics.adapters.prompts import FileSystemPrompts
 from column_semantics.core.llm_log import LLMLog
 from column_semantics.core.timeline import Timeline
 from column_semantics.pipeline.documents import PARTS
 from column_semantics.pipeline.orchestrator import Documents, PipelineConfig, run_pipeline
-from column_semantics.pipeline.plan import REQUIRED_SKILLS
-from column_semantics.pipeline.skill_runner import SkillRunner
+from column_semantics.pipeline.plan import REQUIRED_PROMPTS, REQUIRED_SKILLS
+from column_semantics.pipeline.stage_runner import StageRunner
 
-DEFAULT_SKILL_DIR = Path(__file__).resolve().parents[2] / "skills"
+_ROOT = Path(__file__).resolve().parents[2]
+# 고정 단계 프롬프트와 보완 skill은 폴더가 다르다 - 무엇이 언제 도는지를 폴더가 말한다.
+DEFAULT_PROMPT_DIR = _ROOT / "prompts"
+DEFAULT_SKILL_DIR = _ROOT / "skills"
 
 
 def output_paths(output: Path) -> Dict[str, Path]:
@@ -46,6 +49,7 @@ def output_paths(output: Path) -> Dict[str, Path]:
 
 def analyze_csv(
     csv_path: Path,
+    prompt_dir: Path = DEFAULT_PROMPT_DIR,
     skill_dir: Path = DEFAULT_SKILL_DIR,
     max_rounds: int = 2,
     output: Optional[Path] = None,
@@ -57,6 +61,7 @@ def analyze_csv(
     `meta.status`(in_progress/done)로 구분한다.
     """
     csv_path = Path(csv_path)
+    prompt_dir = Path(prompt_dir)
     skill_dir = Path(skill_dir)
     paths = output_paths(Path(output)) if output is not None else None
 
@@ -67,15 +72,20 @@ def analyze_csv(
     llm_log = LLMLog()
     rate_limiter = make_rate_limiter_from_env()
     llm = make_llm_from_env(llm_log=llm_log, rate_limiter=rate_limiter)
-    skills = FileSystemSkillLibrary(skill_dir, required=REQUIRED_SKILLS)
-    runner = SkillRunner(skills=skills, llm=llm)
+    stages = FileSystemPrompts(prompt_dir, required=REQUIRED_PROMPTS)
+    skills = FileSystemPrompts(skill_dir, required=REQUIRED_SKILLS)
+    runner = StageRunner(stages=stages, skills=skills, llm=llm)
 
     config = PipelineConfig(
         max_rounds=max_rounds,
         max_workers=rate_limiter.max_concurrency,
         source_name=csv_path.name,
         on_checkpoint=(lambda docs: write_documents(paths, docs)) if paths else None,
-        meta={"source_csv": str(csv_path), "skills_dir": str(skill_dir)},
+        meta={
+            "source_csv": str(csv_path),
+            "prompts_dir": str(prompt_dir),
+            "skills_dir": str(skill_dir),
+        },
     )
 
     documents = run_pipeline(df, runner, config=config, timeline=timeline, llm_log=llm_log)

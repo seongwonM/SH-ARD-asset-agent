@@ -46,31 +46,40 @@ probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **
 `fail`로 처리하지 말 것** — 평가할 수 없다는 것은 반증이 아니다(`run_probe`가
 `None`을 내면 check를 건드리지 않는다).
 
-## skill 추가
+## 고정 단계와 보완 skill
 
-`skills/<이름>.md` 파일 하나가 skill 하나다. 파일 내용이 그대로 system 프롬프트가
-되고, 등록 절차는 없다(폴더를 읽는다). 절차는 `/new-skill` 슬래시 커맨드 참고.
+프롬프트 폴더가 둘로 갈려 있고, 기준은 **누가 실행을 결정하는가**다.
 
-새 skill을 실제로 돌게 하려면 두 곳만 만진다.
+| | 폴더 | 실행 결정 | 예 |
+|---|---|---|---|
+| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | semantic_type, column_interpretation, semantic_validation, table_context |
+| 보완 skill | `skills/` | `gap_planner`가 컬럼별로 판단 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning |
 
-- `pipeline/plan.py` — 언제 도는가(고정 순서 / gap 보충 / 재계획 후보)
-- `pipeline/skill_runner.py` — 그 skill이 볼 payload
+**항상 나와야 하는 산출물을 skill로 만들지 말 것.** 컬럼 해석과 테이블 맥락은
+무조건 만들어야 하니 "돌릴지 말지"를 물을 여지가 없다 - 물어보는 순간 비용과
+비결정성만 는다. 반대로 컬럼마다 다른 보충은 규칙표로 만들지 말 것 - 그건
+gap_planner에게 맡긴 지점이다.
 
-**payload는 좁게 준다.** 컬럼 단위 skill에 테이블 전체 프로파일을 넣지 않는다 —
-컬럼이 늘수록 무관한 정보가 판단을 흐리고 토큰만 커진다. 그룹 단위 skill은
+프롬프트 추가는 파일 하나 + 두 곳이다.
+
+- `pipeline/plan.py` — `STAGE_ORDER`(고정 단계) 또는 `GAP_SKILLS`(보완)
+- `pipeline/stage_runner.py` — 그 프롬프트가 볼 payload
+
+**payload는 좁게 준다.** 컬럼 단위에 테이블 전체 프로파일을 넣지 않는다 —
+컬럼이 늘수록 무관한 정보가 판단을 흐리고 토큰만 커진다. 그룹 단위는
 그 그룹에 속한 컬럼의 증거만 본다.
 
 ## 작업 시 주의
 
 ### 병렬 실행
-컬럼별(`column_interpretation`, gap skill)과 관계 그룹별(`semantic_validation`)만
-병렬로 돈다. 테이블 단위 skill(`semantic_type`, `relation_analysis`,
-`table_context`)은 항상 단독 실행한다 — 같은 결과 슬롯에 둘이 동시에 쓰면
+컬럼별(`column_interpretation`, 보완 skill)과 관계 그룹별(`semantic_validation`)만
+병렬로 돈다. 테이블 단위 고정 단계(`semantic_type`, `relation_analysis`,
+`table_context`)는 항상 단독 실행한다 — 같은 결과 슬롯에 둘이 동시에 쓰면
 마지막 승자가 비결정적이다. 동시 실행 상한은 `LLM_MAX_CONCURRENCY`(RateLimiter)
 하나로 통제한다. 새 병렬 지점을 만들 때 `max_workers`를 따로 정하지 말 것.
 
 ### 실행 순서
-1차 pass 순서는 `pipeline/plan.py`의 `first_pass_skills()`에 고정돼 있다.
+1차 pass 순서는 `pipeline/plan.py`의 `first_pass_stages()`에 고정돼 있다.
 판단 여지가 없는 곳에 LLM 계획 호출을 넣지 말 것. 반대로 컬럼별 보충 판단은
 규칙표로 만들지 말 것 — 그건 `gap_planner`에게 맡긴 지점이다.
 
@@ -103,9 +112,10 @@ gap 보충과 수정 라운드는 `column_interpretation.columns[col]`을 제자
 
 - `core/`에서 환경변수/파일/네트워크 접근
 - pipeline에서 `openai` import
-- skill 실행 순서를 프롬프트로 정하기 (코드에 있다)
+- 고정 단계 실행 순서를 프롬프트로 정하기 (코드에 있다)
+- 항상 도는 산출물을 `skills/`에 두기 (거긴 컬럼별 보완 전용이다)
 - probe 실행 실패를 반증으로 처리
-- 테이블 전체 payload를 컬럼 단위 skill에 통째로 넣기
+- 테이블 전체 payload를 컬럼 단위 프롬프트에 통째로 넣기
 - k8s 매니페스트의 이미지 태그 수동 수정 (CI가 커밋 SHA로 갱신한다)
 
 ## 실험

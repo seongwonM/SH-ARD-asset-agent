@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from conftest import SKILL_DIR
+from conftest import PROMPT_DIR, SKILL_DIR
 from fakes import FakeLLM
 
 from column_semantics import app, cli
@@ -25,7 +25,15 @@ def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
     monkeypatch.setattr(app, "make_llm_from_env", lambda **kwargs: FakeLLM(llm_log=kwargs["llm_log"]))
     out = tmp_path / "result.semantic.json"
 
-    cli.main([str(equipment_csv), "--skills", str(SKILL_DIR), "--output", str(out), "--max-rounds", "1"])
+    cli.main(
+        [
+            str(equipment_csv),
+            "--prompts", str(PROMPT_DIR),
+            "--skills", str(SKILL_DIR),
+            "--output", str(out),
+            "--max-rounds", "1",
+        ]
+    )
 
     paths = app.output_paths(out)
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
@@ -38,11 +46,11 @@ def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
     assert columns["columns"]["power_value"]["stages"]
     assert read(paths["table"])["table_context"]["grain"]
     assert read(paths["rulebase"])["column_profiles"]["run_id"]["name"] == "run_id"
-    assert read(paths["plan"])["first_pass"]["skills"][0] == "semantic_type"
+    assert read(paths["plan"])["first_pass"]["stages"][0] == "semantic_type"
 
     calls = read(paths["llm_calls"])
     assert calls["prompts"]["column_interpretation"].startswith("#")
-    interpretations = [c for c in calls["calls"] if c["skill"] == "column_interpretation"]
+    interpretations = [c for c in calls["calls"] if c["name"] == "column_interpretation"]
     assert len(interpretations) == 6  # 컬럼 수만큼
     assert interpretations[0]["input"]["target_column"] in columns["columns"]
     assert json.loads(interpretations[0]["output_text"]) == interpretations[0]["output"]
@@ -59,7 +67,14 @@ def test_files_survive_a_mid_run_failure(tmp_path, equipment_csv, monkeypatch):
     out = tmp_path / "result.semantic.json"
 
     try:
-        cli.main([str(equipment_csv), "--skills", str(SKILL_DIR), "--output", str(out)])
+        cli.main(
+            [
+                str(equipment_csv),
+                "--prompts", str(PROMPT_DIR),
+                "--skills", str(SKILL_DIR),
+                "--output", str(out),
+            ]
+        )
     except RuntimeError:
         pass
 
@@ -71,5 +86,6 @@ def test_files_survive_a_mid_run_failure(tmp_path, equipment_csv, monkeypatch):
     assert read(paths["rulebase"])["column_profiles"]
 
 
-def test_default_skill_dir_points_at_repo_skills():
+def test_default_dirs_point_at_the_repo_folders():
+    assert app.DEFAULT_PROMPT_DIR == PROMPT_DIR
     assert app.DEFAULT_SKILL_DIR == SKILL_DIR

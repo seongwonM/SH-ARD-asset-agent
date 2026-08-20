@@ -8,17 +8,21 @@ import json
 import pytest
 from fakes import FakeLLM
 
-from column_semantics.adapters.skills import InMemorySkillLibrary
+from column_semantics.adapters.prompts import InMemoryPrompts
 from column_semantics.core.evidence import build_table_evidence
 from column_semantics.pipeline.documents import PARTS
 from column_semantics.pipeline.orchestrator import PipelineConfig, run_pipeline
-from column_semantics.pipeline.plan import REQUIRED_SKILLS
-from column_semantics.pipeline.skill_runner import SkillRunner
+from column_semantics.pipeline.plan import REQUIRED_PROMPTS, REQUIRED_SKILLS
+from column_semantics.pipeline.stage_runner import StageRunner
 
 
-def make_runner(llm: FakeLLM) -> SkillRunner:
-    skills = InMemorySkillLibrary({name: f"# {name} 프롬프트" for name in REQUIRED_SKILLS})
-    return SkillRunner(skills=skills, llm=llm)
+def make_runner(llm: FakeLLM) -> StageRunner:
+    def library(names):
+        return InMemoryPrompts({name: f"# {name} 프롬프트" for name in names})
+
+    return StageRunner(
+        stages=library(REQUIRED_PROMPTS), skills=library(REQUIRED_SKILLS), llm=llm
+    )
 
 
 @pytest.fixture
@@ -81,11 +85,24 @@ def test_every_call_carries_its_stage(run_result):
     """호출 기록이 어느 단계에서 나온 것인지 알 수 있어야 llm_calls 문서가 쓸모 있다."""
     llm, _ = run_result
     context = llm.context_for("column_interpretation:power_value")
-    assert context["skill"] == "column_interpretation"
+    assert context["name"] == "column_interpretation"
     assert context["column"] == "power_value"
     assert context["phase"] == "exec"
     assert context["round"] == 1
     assert llm.context_for("replan")["stage"] == "replan"
+
+
+def test_call_records_say_whether_it_was_a_fixed_stage_or_a_supplement(run_result):
+    """호출 기록만 보고도 '코드가 돌린 것'과 '보완으로 붙은 것'이 갈려야 한다."""
+    llm, _ = run_result
+    kind = {c["label"]: c["context"]["kind"] for c in llm.calls}
+    assert kind["semantic_type"] == "stage"
+    assert kind["column_interpretation:power_value"] == "stage"
+    assert kind["table_context"] == "stage"
+    assert kind["reconsider_ambiguous:power_value"] == "skill"
+    # 계획 호출은 산출물이 아니라 실행 결정이라 둘 중 어느 쪽도 아니다.
+    assert kind["gap_planner"] == "planner"
+    assert kind["replan"] == "planner"
 
 
 def test_bogus_gap_assignments_are_never_executed(run_result):
@@ -152,10 +169,10 @@ def test_probe_refutes_llm_pass_and_triggers_revision(run_result):
     round2 = docs["plan"]["replans"][0]
     assert round2["round"] == 2
     # table_context는 계획에서 제거되고, semantic_validation은 자동으로 붙는다.
-    steps = [s["skill"] for s in round2["steps"]]
+    steps = [s["stage"] for s in round2["steps"]]
     assert steps == ["column_interpretation", "semantic_validation"]
     # LLM 원출력은 정제 전 그대로 남는다 - 코드가 무엇을 걸러냈는지 대조할 수 있어야 한다.
-    assert [s["skill"] for s in round2["raw"]["steps"]] == [
+    assert [s["stage"] for s in round2["raw"]["steps"]] == [
         "column_interpretation",
         "table_context",
     ]
@@ -164,7 +181,7 @@ def test_probe_refutes_llm_pass_and_triggers_revision(run_result):
     reexec = [
         e
         for e in docs["plan"]["execution"]
-        if e.get("skill") == "column_interpretation" and e.get("phase") == "re-exec"
+        if e.get("stage") == "column_interpretation" and e.get("phase") == "re-exec"
     ]
     assert len(reexec) == 1
 
@@ -206,7 +223,7 @@ def test_revision_ends_in_pass_and_regenerates_table_context(run_result):
     contexts = [
         e
         for e in docs["plan"]["execution"]
-        if e.get("skill") == "table_context" and e.get("event") == "skill"
+        if e.get("stage") == "table_context" and e.get("event") == "stage"
     ]
     # 1차 마무리 + 수정 후 재생성
     assert [c["phase"] for c in contexts] == ["exec", "re-exec"]
@@ -218,11 +235,11 @@ def test_revision_ends_in_pass_and_regenerates_table_context(run_result):
 def test_execution_trace_covers_every_skill(run_result):
     _, docs = run_result
     execution = docs["plan"]["execution"]
-    skills = {e["skill"] for e in execution if e.get("event") == "skill"}
-    assert {"semantic_type", "column_interpretation", "semantic_validation", "table_context"} <= skills
+    stages = {e["stage"] for e in execution if e.get("event") == "stage"}
+    assert {"semantic_type", "column_interpretation", "semantic_validation", "table_context"} <= stages
     assert all("elapsed_seconds" in e for e in execution)
     # 1차 고정 순서와 gap 배정 근거도 계획 문서 안에 있다.
-    assert docs["plan"]["first_pass"]["skills"][0] == "semantic_type"
+    assert docs["plan"]["first_pass"]["stages"][0] == "semantic_type"
     assert docs["plan"]["gap_planning"]["assignments"][0]["column"] == "power_value"
     assert len(docs["plan"]["gap_planning"]["raw"]["gap_assignments"]) == 3  # 정제 전 원본
 

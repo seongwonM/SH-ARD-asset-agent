@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  로컬 코드(run.py / src / skills)를 PVC(/data/column_semantic_poc)로 업로드한다.
+  로컬 코드(run.py / src / prompts / skills)를 PVC(/data/column_semantic_poc)로 업로드한다.
 
 .DESCRIPTION
   평소에는 이 스크립트가 필요 없다. k8s/column-poc-job.yaml은 기본적으로
@@ -49,9 +49,9 @@ $envVars = Read-DotEnv ".env"
 $Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
 $nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
 
-# run.py(진입점) / src(구현) / skills(프롬프트)가 한 세트다. 셋 중 하나만 낡아도
+# run.py(진입점) / src(구현) / prompts(고정 단계) / skills(보완)가 한 세트다. 넷 중 하나만 낡아도
 # 원인을 알기 어려운 실패가 나므로 항상 셋을 같이 올린다.
-$required = @("run.py", "src", "skills")
+$required = @("run.py", "src", "prompts", "skills")
 foreach ($item in $required) {
     if (-not (Test-Path (Join-Path $LocalDir $item))) {
         throw "$LocalDir/$item 가 없습니다. 레포 루트에서 실행했는지 확인하세요(-LocalDir로 지정 가능)."
@@ -93,6 +93,6 @@ foreach ($item in $required) {
         throw "$remoteDir/$item 확인 실패 - 업로드가 제대로 되지 않았습니다."
     }
 }
-Write-Host "run.py / src / skills 확인됨. kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행하면"
+Write-Host "run.py / src / prompts / skills 확인됨. kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행하면"
 Write-Host "이미지 코드 대신 이 PVC 코드가 쓰인다. 실험이 끝나면 다음으로 되돌릴 것:"
 Write-Host "  kubectl exec $PodName -- rm -rf $remoteDir"

@@ -41,16 +41,17 @@ src/column_semantics/
   adapters/                바깥 세계. 여기만 갈아끼우면 다른 환경에 붙는다
     csv_source.py            인코딩 추정 + 깨진 행 복구
     llm.py                   OpenAI 호환 엔드포인트 (LLMClient 프로토콜)
-    skills.py                skills/*.md 로딩
+    prompts.py               prompts/*.md, skills/*.md 로딩
     env.py, ratelimit.py
   pipeline/                조립. 순서와 병렬화
-    plan.py                  고정 순서 + LLM 계획 출력 정제
-    skill_runner.py          skill별 payload 조립
+    plan.py                  고정 단계 순서 + LLM 계획 출력 정제
+    stage_runner.py          단계/skill별 payload 조립
     orchestrator.py          실행 루프
     documents.py             결과를 5개 문서로 나눠 담기
   app.py                   composition root (CLI도 실험도 여기를 부른다)
   cli.py
-skills/*.md                skill = 프롬프트 파일 하나. 등록 절차 없음
+prompts/*.md               고정 단계 프롬프트. 코드가 순서대로 돌린다
+skills/*.md                보완 skill. 그 컬럼에 필요할 때만 붙는다
 experiments/               실험 전용. 제품 경로가 아니다
 k8s/                       배치 Job / 디버그 Pod / PVC
 ```
@@ -60,19 +61,28 @@ import하면 "LLM 없이 프로파일링만 검증"이 불가능해진다.
 
 ## 실행 흐름
 
+실행 단위는 두 종류고, **누가 실행을 결정하는가**로 갈린다.
+
 ```
-1차   semantic_type → column_interpretation(컬럼별 병렬) → relation_analysis*
-gap   gap_planner가 컬럼별로 부족한 점 판단 → 배정된 보충 skill 병렬 실행
-검증  관계 그룹별 semantic_validation 병렬 → probe로 실측 대조
+[고정 단계 · prompts/]  코드가 정한 순서. 무조건 만들어야 하는 산출물이다
+1차    semantic_type → column_interpretation(컬럼별 병렬) → relation_analysis*
+검증   관계 그룹별 semantic_validation 병렬 → probe로 실측 대조
 마무리 table_context
-수정  needs_revision이면 planner가 재계획 → 해당 skill만 재실행 → 재검증
+
+[보완 skill · skills/]  그 컬럼에 필요할 때만 붙는다
+gap    gap_planner가 컬럼별로 부족한 점 판단 → 배정된 skill만 병렬 실행
+
+수정   needs_revision이면 planner가 재계획 → 해당 고정 단계만 재실행 → 재검증
 ```
 
-`*` pairwise 증거가 하나도 없으면 relation_analysis는 호출하지 않는다.
+`*` pairwise 증거가 하나도 없으면 relation_analysis는 호출하지 않는다 — 이것도
+LLM 판단이 아니라 데이터 조건이다.
 
-**1차 순서는 고정이라 LLM에게 묻지 않는다.** 판단할 여지가 없는 곳에 계획
+**고정 단계는 LLM에게 "돌릴까요"를 묻지 않는다.** 컬럼 해석도 테이블 맥락도
+반드시 나와야 하는 산출물이라 물어볼 여지가 없고, 판단할 여지가 없는 곳에 계획
 호출을 넣으면 비용만 늘고 재현성이 떨어진다. LLM이 계획하는 지점은 두 곳뿐이다
-— 컬럼별 보충(`gap_planner`)과 검증 실패 후 재계획(`planner`).
+— 컬럼별 보완 배정(`gap_planner`)과 검증 실패 후 재계획(`planner`, 고정 단계
+중에서만 고른다).
 
 ## 결과 파일
 
@@ -97,15 +107,21 @@ gap   gap_planner가 컬럼별로 부족한 점 판단 → 배정된 보충 skil
 알 수 없다. 단, LLM에게 되돌려주는 재시도 피드백에는 실측값을 `measured`로 붙여
 보낸다. 반증의 근거가 곧 다음 시도의 힌트다.
 
-skill이 끝날 때마다 이 5개 파일을 그대로 덮어쓴다. 중간에 죽어도 그때까지의
+단계가 끝날 때마다 이 5개 파일을 그대로 덮어쓴다. 중간에 죽어도 그때까지의
 결과는 파일에 남고, 완주 여부는 `meta.status`(`in_progress` / `done`)로 본다.
 
 `meta.validation_status`가 `unresolved_after_max_rounds`면 반증된 주장을
 끝내 해소하지 못한 채 끝난 것이다. `done`만 보고 넘어가면 안 된다.
 
-## skill 추가
+## 프롬프트 추가
 
-`skills/<이름>.md` 파일 하나를 만들고, `pipeline/plan.py`에 언제 도는지 적는다.
+파일을 어느 폴더에 두느냐가 곧 "언제 도는가"다.
+
+- **보완 skill** — `skills/<이름>.md` + `plan.py`의 `GAP_SKILLS`에 이름 추가.
+  gap_planner가 그 컬럼에 필요하다고 판단할 때만 붙는다.
+- **고정 단계** — `prompts/<이름>.md` + `plan.py`의 `STAGE_ORDER`에 순서 지정.
+  항상(또는 데이터 조건에 따라) 돈다. 정말 매번 필요한 산출물인지 먼저 따져볼 것.
+
 등록 절차는 없다 — 폴더를 읽는다. 자세한 절차는 `.claude/commands/new-skill.md`.
 
 ## 배치 / k8s

@@ -100,7 +100,7 @@ Return JSON only:
     {
       "columns": ["..."],
       "issue": "...",
-      "suggested_skills": ["column_interpretation", "relation_analysis"]
+      "suggested_stages": ["column_interpretation", "relation_analysis"]
     }
   ],
   "validated_columns": {

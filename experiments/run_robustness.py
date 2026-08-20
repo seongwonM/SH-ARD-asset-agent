@@ -26,7 +26,11 @@ from typing import Any, Dict, Set, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from column_semantics.adapters.env import load_dotenv  # noqa: E402
-from column_semantics.app import DEFAULT_SKILL_DIR, analyze_csv  # noqa: E402
+from column_semantics.app import (  # noqa: E402
+    DEFAULT_PROMPT_DIR,
+    DEFAULT_SKILL_DIR,
+    analyze_csv,
+)
 
 Key = Tuple[str, str, int]
 
@@ -73,6 +77,7 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--reps", type=int, default=5)
+    parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_DIR)
     parser.add_argument("--skills", type=Path, default=DEFAULT_SKILL_DIR)
     parser.add_argument("--max-rounds", type=int, default=2)
     args = parser.parse_args()
@@ -99,7 +104,12 @@ def main() -> int:
         started = time.time()
         row: Dict[str, Any] = {"dataset": csv.stem, "model": model, "rep": rep}
         try:
-            documents = analyze_csv(csv, skill_dir=args.skills, max_rounds=args.max_rounds)
+            documents = analyze_csv(
+                csv,
+                prompt_dir=args.prompts,
+                skill_dir=args.skills,
+                max_rounds=args.max_rounds,
+            )
             row.update(summarize(documents))
             row["status"] = "ok"
         except Exception as e:  # noqa: BLE001 - 한 회차 실패가 실험을 끝내면 안 된다

@@ -5,7 +5,7 @@
 # 위해서다(파이썬 배치 버전은 experiments/run_batch.py에 있다 - 로컬용).
 #
 # 코드 위치
-#   기본은 이미지 안의 /app이다. run.py / src / skills가 deploy/Dockerfile로
+#   기본은 이미지 안의 /app이다. run.py / src / prompts / skills가 deploy/Dockerfile로
 #   COPY되어 있으므로 추가 준비 없이 바로 돈다.
 #   /data/column_semantic_poc/run.py가 있으면 그쪽을 대신 쓴다 - 폐쇄망에서
 #   이미지 재빌드 없이 코드만 바꿔 돌려보는 경로다(./k8s/scripts/upload-column-poc.ps1).
@@ -97,8 +97,8 @@ spec:
                 echo "[SRC] 이미지 코드 사용: $SRC_DIR"
               fi
 
-              if [ ! -f "$SRC_DIR/run.py" ] || [ ! -d "$SRC_DIR/skills" ]; then
-                echo "[ERROR] $SRC_DIR에 run.py 또는 skills/가 없습니다." >&2
+              if [ ! -f "$SRC_DIR/run.py" ] || [ ! -d "$SRC_DIR/prompts" ] || [ ! -d "$SRC_DIR/skills" ]; then
+                echo "[ERROR] $SRC_DIR에 run.py / prompts/ / skills/ 중 없는 것이 있습니다." >&2
                 exit 1
               fi
 
@@ -153,6 +153,7 @@ spec:
                 echo "[RUN] $name -> $exp_dir"
                 rm -f "$log_file"
                 if python "$SRC_DIR/run.py" "$csv" \
+                    --prompts "$SRC_DIR/prompts" \
                     --skills "$SRC_DIR/skills" \
                     --output "$out" 2>&1 | tee "$log_file"; then
                   ok=$((ok + 1))

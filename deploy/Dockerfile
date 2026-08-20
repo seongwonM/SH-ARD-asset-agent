@@ -13,10 +13,13 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-# run.py(진입점) + src(구현) + skills(프롬프트)가 한 세트다. 셋 중 하나라도
-# 빠지면 컨테이너 안에서 아무것도 못 돈다. experiments는 배치/강건성 Job이 쓴다.
+# run.py(진입점) + src(구현) + prompts(고정 단계) + skills(보완)가 한 세트다.
+# 넷 중 하나라도 빠지면 컨테이너 안에서 아무것도 못 돈다 - prompts가 없으면
+# 시작조차 못 하고, skills가 없으면 gap 보완에서 죽는다.
+# experiments는 배치/강건성 Job이 쓴다.
 COPY run.py ./
 COPY src ./src
+COPY prompts ./prompts
 COPY skills ./skills
 COPY experiments ./experiments
 

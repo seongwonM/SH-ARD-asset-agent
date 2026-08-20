@@ -52,12 +52,13 @@ class FakeLLM:
         if self.llm_log is not None:
             self.llm_log.add(
                 prompt_ref=self.llm_log.register_prompt(
-                    str((context or {}).get("skill") or label), system_prompt
+                    str((context or {}).get("name") or label), system_prompt
                 ),
                 payload=payload,
                 response_text=json.dumps(result, ensure_ascii=False),
                 response=result,
-                context=context or {},
+                # 진짜 어댑터는 label도 기록에 넣는다 - 문서 모양이 어긋나면 안 된다.
+                context={"label": label, **(context or {})},
                 status="ok",
                 attempt=1,
                 model=self.model,
@@ -153,9 +154,9 @@ class FakeLLM:
         return {
             "reason": "probe가 한계 초과를 확인했으므로 해당 컬럼만 다시 해석한다",
             "steps": [
-                {"skill": "column_interpretation", "goal": "재해석", "focus": ["power_value"]},
+                {"stage": "column_interpretation", "goal": "재해석", "focus": ["power_value"]},
                 # table_context는 계획에서 제거되어야 한다(재계획 후 항상 자동 생성).
-                {"skill": "table_context", "goal": "무시되어야 함", "focus": []},
+                {"stage": "table_context", "goal": "무시되어야 함", "focus": []},
             ],
         }
 

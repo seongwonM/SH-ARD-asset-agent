@@ -24,7 +24,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from column_semantics.adapters.env import load_dotenv  # noqa: E402
-from column_semantics.app import DEFAULT_SKILL_DIR, analyze_csv  # noqa: E402
+from column_semantics.app import (  # noqa: E402
+    DEFAULT_PROMPT_DIR,
+    DEFAULT_SKILL_DIR,
+    analyze_csv,
+)
 from column_semantics.core.clock import KST  # noqa: E402
 
 
@@ -32,6 +36,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True, help="CSV가 들어있는 폴더")
     parser.add_argument("--out", type=Path, required=True, help="결과 루트 폴더")
+    parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_DIR)
     parser.add_argument("--skills", type=Path, default=DEFAULT_SKILL_DIR)
     parser.add_argument("--max-rounds", type=int, default=2)
     args = parser.parse_args()
@@ -54,6 +59,7 @@ def main() -> int:
         try:
             analyze_csv(
                 csv_path=csv,
+                prompt_dir=args.prompts,
                 skill_dir=args.skills,
                 max_rounds=args.max_rounds,
                 output=out,

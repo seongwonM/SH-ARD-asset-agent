@@ -1,6 +1,6 @@
 """실행 순서와 병렬화. 파일도 네트워크도 직접 만지지 않는다.
 
-입력은 DataFrame + SkillRunner(어댑터가 주입된 것)뿐이고, 출력은 문서 5벌이다.
+입력은 DataFrame + StageRunner(어댑터가 주입된 것)뿐이고, 출력은 문서 5벌이다.
 파일로 쓰는 일조차 콜백(`on_checkpoint`)으로 빼서, 이 모듈은 "무엇을 어떤
 순서로 돌리는가"만 알게 했다 - 그래서 가짜 LLM 하나만 있으면 전 구간이
 테스트된다.
@@ -8,11 +8,15 @@
 구조:
 
     1차 pass   semantic_type -> column_interpretation(컬럼별 병렬)
-               -> relation_analysis(pairwise 증거 있을 때만)
-    gap 보충   gap_planner 판단 -> 배정된 (컬럼, skill) 병렬 실행
-    검증       관계 그룹별 semantic_validation 병렬 -> probe로 실측 대조
-    마무리     table_context
-    수정 라운드 검증이 needs_revision이면 replan -> 해당 skill만 재실행 -> 재검증
+               -> relation_analysis(pairwise 증거 있을 때만)          [고정 단계]
+    gap 보충   gap_planner 판단 -> 배정된 (컬럼, skill) 병렬 실행      [보완 skill]
+    검증       관계 그룹별 semantic_validation 병렬 -> probe로 실측 대조 [고정 단계]
+    마무리     table_context                                          [고정 단계]
+    수정 라운드 검증이 needs_revision이면 replan -> 해당 단계만 재실행 -> 재검증
+
+여기서 LLM에게 "무엇을 돌릴까"를 묻는 곳은 gap 보충 하나뿐이다. 나머지는 전부
+코드가 정한 순서다 - 무조건 만들어야 하는 산출물에 계획 호출을 넣으면 비용만
+늘고 재현성이 떨어진다.
 
 단계를 지날 때마다 컬럼이 어떻게 바뀌었는지를 `ColumnHistory`에 남긴다. 결과
 dict는 최신 상태만 들고 있어서, 기록하지 않으면 "gap 보충이 무엇을 바꿨는지"가
@@ -36,8 +40,8 @@ from column_semantics.core.probes import apply_probes, with_measurements
 from column_semantics.core.relations import build_relation_groups
 from column_semantics.core.timeline import Timeline
 from column_semantics.pipeline.documents import PARTS, build_documents
-from column_semantics.pipeline.plan import SKILL_ORDER, first_pass_skills, revision_steps
-from column_semantics.pipeline.skill_runner import SkillRunner
+from column_semantics.pipeline.plan import STAGE_ORDER, first_pass_stages, revision_steps
+from column_semantics.pipeline.stage_runner import StageRunner
 
 Documents = Dict[str, Dict[str, Any]]
 
@@ -69,7 +73,7 @@ def _parallel(max_workers: int, jobs: List[Any], fn: Callable[[Any], Any]) -> Di
 
 
 def interpret_columns_parallel(
-    runner: SkillRunner,
+    runner: StageRunner,
     evidence: Dict[str, Any],
     results: Dict[str, Any],
     max_workers: int,
@@ -101,7 +105,7 @@ def interpret_columns_parallel(
 
 
 def validate_grouped(
-    runner: SkillRunner,
+    runner: StageRunner,
     evidence: Dict[str, Any],
     results: Dict[str, Any],
     max_workers: int,
@@ -164,7 +168,7 @@ def validate_grouped(
 
 
 def resolve_gaps(
-    runner: SkillRunner,
+    runner: StageRunner,
     evidence: Dict[str, Any],
     results: Dict[str, Any],
     max_workers: int,
@@ -244,25 +248,25 @@ def _record(
         history.record_change(column, stage, before, after, **info)
 
 
-def _record_table_skill_columns(
+def _record_stage_columns(
     history: ColumnHistory,
-    skill: str,
+    stage: str,
     before: Optional[Dict[str, Any]],
     after: Optional[Dict[str, Any]],
     stage_info: Dict[str, Any],
 ) -> None:
-    """테이블 단위 skill이 컬럼별로 낸 값을 컬럼 이력에 흩뿌린다.
+    """테이블 단위 고정 단계가 컬럼별로 낸 값을 컬럼 이력에 흩뿌린다.
 
     semantic_type은 `columns`, relation_analysis는 `revised_columns`에 컬럼별
     판단을 담는다 - 그 두 개만 컬럼 이력의 재료가 된다.
     """
-    key = {"semantic_type": "columns", "relation_analysis": "revised_columns"}.get(skill)
+    key = {"semantic_type": "columns", "relation_analysis": "revised_columns"}.get(stage)
     if key is None:
         return
     previous = (before or {}).get(key) or {}
     current = (after or {}).get(key) or {}
     for col, value in current.items():
-        _record(history, col, skill, previous.get(col), value, stage_info)
+        _record(history, col, stage, previous.get(col), value, stage_info)
 
 
 # ---------------------------------------------------------------------
@@ -272,7 +276,7 @@ def _record_table_skill_columns(
 
 def run_pipeline(
     df: pd.DataFrame,
-    runner: SkillRunner,
+    runner: StageRunner,
     config: Optional[PipelineConfig] = None,
     timeline: Optional[Timeline] = None,
     llm_log: Optional[LLMLog] = None,
@@ -329,18 +333,18 @@ def run_pipeline(
         if config.on_checkpoint is not None:
             config.on_checkpoint(build_docs("in_progress"))
 
-    def exec_table_skill(skill: str, phase: str, round_idx: Optional[int] = None, **kwargs: Any) -> None:
+    def exec_stage(stage: str, phase: str, round_idx: Optional[int] = None, **kwargs: Any) -> None:
         label = "[EXEC]" if phase == "exec" else "[RE-EXEC]"
-        print(f"{label} {skill} 시작", flush=True)
+        print(f"{label} {stage} 시작", flush=True)
         started = time.time()
-        before = results.get(skill)
-        with timeline.measure(event="skill", phase=phase, skill=skill, **_round(round_idx)):
+        before = results.get(stage)
+        with timeline.measure(event="stage", phase=phase, stage=stage, **_round(round_idx)):
             with runner.stage(phase=phase, **_round(round_idx)):
-                results[skill] = runner.run_table_skill(skill, evidence, results, **kwargs)
-        _record_table_skill_columns(
-            history, skill, before, results[skill], _stage_info(phase, round_idx)
+                results[stage] = runner.run_stage(stage, evidence, results, **kwargs)
+        _record_stage_columns(
+            history, stage, before, results[stage], _stage_info(phase, round_idx)
         )
-        print(f"{label} {skill} 완료 ({time.time() - started:.1f}초)", flush=True)
+        print(f"{label} {stage} 완료 ({time.time() - started:.1f}초)", flush=True)
         checkpoint()
 
     def exec_columns(phase: str, columns: List[str], round_idx: Optional[int] = None, **kwargs: Any) -> None:
@@ -348,7 +352,7 @@ def run_pipeline(
         print(f"{label} column_interpretation 시작 ({len(columns)}개 컬럼)", flush=True)
         started = time.time()
         with timeline.measure(
-            event="skill", phase=phase, skill="column_interpretation", **_round(round_idx)
+            event="stage", phase=phase, stage="column_interpretation", **_round(round_idx)
         ):
             with runner.stage(phase=phase, **_round(round_idx)):
                 results["column_interpretation"] = interpret_columns_parallel(
@@ -374,7 +378,7 @@ def run_pipeline(
         print(f"{label} semantic_validation 시작", flush=True)
         started = time.time()
         with timeline.measure(
-            event="skill", phase=phase, skill="semantic_validation", **_round(round_idx)
+            event="stage", phase=phase, stage="semantic_validation", **_round(round_idx)
         ):
             with runner.stage(phase=phase, **_round(round_idx)):
                 results["semantic_validation"] = validate_grouped(
@@ -389,7 +393,7 @@ def run_pipeline(
             # check도 여기서 실측과 어긋나면 fail로 내려간다. 실측값 자체는 check에
             # 남기지 않고 probe_log(rulebase 문서)로 간다.
             probe_started = time.time()
-            with timeline.measure(event="probe", skill="semantic_validation", **_round(round_idx)):
+            with timeline.measure(event="probe", stage="semantic_validation", **_round(round_idx)):
                 results["semantic_validation"] = apply_probes(
                     df,
                     results["semantic_validation"],
@@ -412,9 +416,9 @@ def run_pipeline(
 
     # -- 1차 pass ------------------------------------------------------
     has_pairwise = bool(evidence.get("relation_evidence", {}).get("pairwise"))
-    first_pass = first_pass_skills(has_pairwise)
+    first_pass = first_pass_stages(has_pairwise)
     planning["first_pass"] = {
-        "skills": first_pass,
+        "stages": first_pass,
         "source": "fixed_order",
         "relation_analysis_included": has_pairwise,
         "reason": (
@@ -431,11 +435,11 @@ def run_pipeline(
     )
 
     with runner.stage(stage="first_pass", round=1):
-        for skill in first_pass:
-            if skill == "column_interpretation":
+        for stage in first_pass:
+            if stage == "column_interpretation":
                 exec_columns(phase="exec", columns=all_columns)
             else:
-                exec_table_skill(skill, phase="exec")
+                exec_stage(stage, phase="exec")
 
     # -- gap 보충 -------------------------------------------------------
     with timeline.measure(event="gap_resolution") as entry:
@@ -456,7 +460,7 @@ def run_pipeline(
     with runner.stage(stage="validation", round=1):
         exec_validation(phase="exec")
     with runner.stage(stage="first_pass", round=1):
-        exec_table_skill("table_context", phase="exec")
+        exec_stage("table_context", phase="exec")
 
     # -- 수정 라운드 -----------------------------------------------------
     # 검증이 needs_revision이면 replan으로 필요한 skill만 다시 돈다. max_rounds까지
@@ -493,11 +497,11 @@ def run_pipeline(
                 },
             }
         )
-        print(f"[PLAN {round_idx}]", " -> ".join(step["skill"] for step in steps), flush=True)
+        print(f"[PLAN {round_idx}]", " -> ".join(step["stage"] for step in steps), flush=True)
 
         for step in steps:
-            skill = step["skill"]
-            if skill == "column_interpretation":
+            stage = step["stage"]
+            if stage == "column_interpretation":
                 exec_columns(
                     phase="re-exec",
                     columns=step.get("focus") or all_columns,
@@ -505,11 +509,11 @@ def run_pipeline(
                     revision_feedback=feedback,
                     existing=(results.get("column_interpretation") or {}).get("columns", {}),
                 )
-            elif skill == "semantic_validation":
+            elif stage == "semantic_validation":
                 exec_validation(phase="re-exec", round_idx=round_idx, revision_feedback=feedback)
             else:
-                exec_table_skill(
-                    skill,
+                exec_stage(
+                    stage,
                     phase="re-exec",
                     round_idx=round_idx,
                     focus=step.get("focus", []),
@@ -517,7 +521,7 @@ def run_pipeline(
                 )
 
         # 수정 후에는 항상 table_context를 다시 만든다.
-        exec_table_skill(
+        exec_stage(
             "table_context", phase="re-exec", round_idx=round_idx, revision_feedback=feedback
         )
 
@@ -597,7 +601,7 @@ def _stage_info(phase: str, round_idx: Optional[int]) -> Dict[str, Any]:
 __all__ = [
     "PARTS",
     "PipelineConfig",
-    "SKILL_ORDER",
+    "STAGE_ORDER",
     "interpret_columns_parallel",
     "resolve_gaps",
     "run_pipeline",

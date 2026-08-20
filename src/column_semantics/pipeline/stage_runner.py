@@ -1,12 +1,16 @@
-"""skill 하나를 실행한다 = 그 skill에 맞는 payload를 만들어 LLM에 넘긴다.
+"""한 번의 LLM 호출 = 그에 맞는 payload를 만들어 넘기는 일. 그 조립 규칙만 여기 있다.
 
 **여기 있는 것은 payload 조립 규칙뿐이다.** 실행 순서/병렬화/재시도 라운드는
-orchestrator가, JSON 파싱/레이트리밋/타임라인은 LLM 어댑터가 맡는다.
+orchestrator가, JSON 파싱/레이트리밋/호출 기록은 LLM 어댑터가 맡는다.
 
-payload를 skill마다 좁히는 게 이 클래스의 핵심이다. 테이블 전체를 통째로
-넣으면 컬럼이 늘수록 무관한 정보가 판단을 흐리고 토큰만 커진다 - 컬럼 단위
-skill은 그 컬럼의 프로파일만, 그룹 단위 skill은 그 그룹에 속한 컬럼의 증거만
-본다.
+프롬프트는 두 곳에서 온다 - 코드가 순서대로 돌리는 고정 단계(`stages`)와,
+gap_planner가 컬럼별로 붙이는 보완 skill(`skills`). 둘을 한 라이브러리로 합치지
+않는 이유는, 합치는 순간 "이 프롬프트가 언제 도는가"가 이름만 봐서는 알 수 없게
+되기 때문이다. 호출 기록에도 `kind`로 남는다.
+
+payload를 좁히는 게 이 클래스의 핵심이다. 테이블 전체를 통째로 넣으면 컬럼이
+늘수록 무관한 정보가 판단을 흐리고 토큰만 커진다 - 컬럼 단위는 그 컬럼의
+프로파일만, 그룹 단위는 그 그룹에 속한 컬럼의 증거만 본다.
 """
 
 from __future__ import annotations
@@ -16,17 +20,18 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 from column_semantics.adapters.llm import LLMClient
-from column_semantics.adapters.skills import SkillLibrary
+from column_semantics.adapters.prompts import PromptLibrary
 from column_semantics.pipeline.plan import (
     GAP_SKILLS,
-    SKILL_ORDER,
+    STAGE_ORDER,
     sanitize_gap_assignments,
     sanitize_plan,
 )
 
 
-class SkillRunner:
-    def __init__(self, skills: SkillLibrary, llm: LLMClient):
+class StageRunner:
+    def __init__(self, stages: PromptLibrary, skills: PromptLibrary, llm: LLMClient):
+        self.stages = stages
         self.skills = skills
         self.llm = llm
         self._stage: Dict[str, Any] = {}
@@ -47,14 +52,26 @@ class SkillRunner:
             self._stage = previous
 
     def _call(
-        self, skill_name: str, payload: Dict[str, Any], label: str, **context: Any
+        self,
+        name: str,
+        library: PromptLibrary,
+        kind: str,
+        payload: Dict[str, Any],
+        label: str,
+        **context: Any,
     ) -> Dict[str, Any]:
         return self.llm.complete_json(
-            self.skills.prompt(skill_name),
+            library.prompt(name),
             payload,
             label=label,
-            context={**self._stage, "skill": skill_name, **context},
+            context={**self._stage, "name": name, "kind": kind, **context},
         )
+
+    def _call_stage(self, name: str, payload: Dict[str, Any], label: str, **context: Any):
+        return self._call(name, self.stages, "stage", payload, label, **context)
+
+    def _call_skill(self, name: str, payload: Dict[str, Any], label: str, **context: Any):
+        return self._call(name, self.skills, "skill", payload, label, **context)
 
     # -- 계획 -----------------------------------------------------------
 
@@ -70,16 +87,18 @@ class SkillRunner:
         {"raw": LLM 원출력, "plan": 정제된 계획}을 돌려준다."""
         payload = {
             "objective": (
-                "semantic_validation이 지적한 모순을 해소하도록, 필요한 skill만 다시 실행하는 계획을 세운다."
+                "semantic_validation이 지적한 모순을 해소하도록, 필요한 단계만 다시 실행하는 계획을 세운다."
             ),
-            "available_skills": SKILL_ORDER,
+            "available_stages": STAGE_ORDER,
             "table_summary": evidence["table"],
             "grain_candidates": evidence.get("grain_candidates", []),
             "has_pairwise_evidence": bool(evidence.get("relation_evidence", {}).get("pairwise")),
             "previous_results": previous_results,
             "validation_feedback": validation_feedback,
         }
-        raw = self._call("planner", payload, label="replan")
+        raw = self._call(
+            "planner", self.stages, "planner", payload, label="replan"
+        )
         # 정제는 원본을 제자리에서 고친다. "LLM이 뭘 냈고 코드가 뭘 걸러냈는지"를
         # 나중에 대조하려면 고치기 전 사본이 있어야 한다.
         return {"raw": copy.deepcopy(raw), "plan": sanitize_plan(raw)}
@@ -87,7 +106,7 @@ class SkillRunner:
     def diagnose_gaps(self, evidence: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
         """1차 해석 직후 호출. 컬럼별 상태(ambiguous 여부, null/zero 비율, 타입-의미
         충돌)를 보고 어떤 컬럼에 GAP_SKILLS 중 무엇을 붙일지 LLM이 판단한다 -
-        규칙표가 아니라 판단이 필요한 지점이라 여기만 planner에게 맡긴다."""
+        규칙표가 아니라 판단이 필요한 지점이라 여기만 LLM에게 맡긴다."""
         column_interp = (results.get("column_interpretation") or {}).get("columns", {})
         semantic_type = (results.get("semantic_type") or {}).get("columns", {})
         columns_summary = []
@@ -105,7 +124,9 @@ class SkillRunner:
             )
 
         payload = {"columns": columns_summary, "available_gap_skills": GAP_SKILLS}
-        result = self._call("gap_planner", payload, label="gap_planner")
+        result = self._call(
+            "gap_planner", self.stages, "planner", payload, label="gap_planner"
+        )
         return {
             "raw": copy.deepcopy(result),
             "gap_assignments": sanitize_gap_assignments(
@@ -113,7 +134,7 @@ class SkillRunner:
             ),
         }
 
-    # -- 컬럼/그룹 단위 실행 --------------------------------------------
+    # -- 컬럼/그룹 단위 고정 단계 ----------------------------------------
 
     def interpret_column(
         self,
@@ -131,57 +152,12 @@ class SkillRunner:
             "semantic_type": semantic_type_cols.get(column),
             "revision_feedback": revision_feedback,
         }
-        return self._call(
+        return self._call_stage(
             "column_interpretation",
             payload,
             label=f"column_interpretation:{column}",
             column=column,
         )
-
-    def run_gap_skill(
-        self,
-        skill_name: str,
-        column: str,
-        evidence: Dict[str, Any],
-        results: Dict[str, Any],
-        reason: str = "",
-    ) -> Dict[str, Any]:
-        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
-        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
-
-        if skill_name == "reconsider_ambiguous":
-            other_resolved = {
-                c: v.get("selected_meaning")
-                for c, v in column_interp.items()
-                if c != column and v.get("status") == "resolved"
-            }
-            payload = {
-                "target_column": column,
-                "column_profile": evidence["column_profiles"][column],
-                "current_interpretation": column_interp.get(column),
-                "other_resolved_columns": other_resolved,
-                "reason": reason,
-            }
-        elif skill_name == "explain_sparsity":
-            payload = {
-                "target_column": column,
-                "column_profile": evidence["column_profiles"][column],
-                "current_interpretation": column_interp.get(column),
-                "table_summary": evidence["table"],
-                "reason": reason,
-            }
-        elif skill_name == "reconcile_type_meaning":
-            payload = {
-                "target_column": column,
-                "column_profile": evidence["column_profiles"][column],
-                "semantic_type": semantic_type.get(column),
-                "current_interpretation": column_interp.get(column),
-                "reason": reason,
-            }
-        else:
-            raise ValueError(f"알 수 없는 gap skill: {skill_name}")
-
-        return self._call(skill_name, payload, label=f"{skill_name}:{column}", column=column)
 
     def validate_group(
         self,
@@ -234,7 +210,7 @@ class SkillRunner:
             "relation_analysis": relation_analysis_scoped,
             "revision_feedback": revision_feedback,
         }
-        return self._call(
+        return self._call_stage(
             "semantic_validation",
             payload,
             label=f"semantic_validation:{group_label or '+'.join(columns)}",
@@ -242,21 +218,21 @@ class SkillRunner:
             columns=list(columns),
         )
 
-    # -- 테이블 단위 실행 ------------------------------------------------
+    # -- 테이블 단위 고정 단계 -------------------------------------------
 
-    def run_table_skill(
+    def run_stage(
         self,
-        skill_name: str,
+        stage: str,
         evidence: Dict[str, Any],
         results: Dict[str, Any],
         focus: Optional[List[str]] = None,
         revision_feedback: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """단일 LLM 호출로 끝나는 skill 전용. column_interpretation은
+        """단일 LLM 호출로 끝나는 고정 단계 전용. column_interpretation은
         interpret_column(컬럼별 병렬)이, semantic_validation은 validate_group
         (그룹별 병렬)이 각각 따로 처리한다."""
 
-        if skill_name == "semantic_type":
+        if stage == "semantic_type":
             payload = {
                 "table": evidence["table"],
                 "column_profiles": evidence["column_profiles"],
@@ -264,7 +240,7 @@ class SkillRunner:
                 "focus": focus or [],
             }
 
-        elif skill_name == "relation_analysis":
+        elif stage == "relation_analysis":
             payload = {
                 "table": evidence["table"],
                 "column_profiles": evidence["column_profiles"],
@@ -277,7 +253,7 @@ class SkillRunner:
                 "focus": focus or [],
             }
 
-        elif skill_name == "table_context":
+        elif stage == "table_context":
             payload = {
                 "table": evidence["table"],
                 "column_profiles": evidence["column_profiles"],
@@ -290,6 +266,56 @@ class SkillRunner:
             }
 
         else:
-            raise ValueError(f"run_table_skill은 {skill_name}을 처리하지 않는다 (전용 메서드를 쓸 것)")
+            raise ValueError(f"run_stage는 {stage}을 처리하지 않는다 (전용 메서드를 쓸 것)")
 
-        return self._call(skill_name, payload, label=skill_name)
+        return self._call_stage(stage, payload, label=stage)
+
+    # -- 보완 skill ------------------------------------------------------
+
+    def run_gap_skill(
+        self,
+        skill_name: str,
+        column: str,
+        evidence: Dict[str, Any],
+        results: Dict[str, Any],
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """gap_planner가 이 컬럼에 필요하다고 판단했을 때만 불린다."""
+        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
+        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
+
+        if skill_name == "reconsider_ambiguous":
+            other_resolved = {
+                c: v.get("selected_meaning")
+                for c, v in column_interp.items()
+                if c != column and v.get("status") == "resolved"
+            }
+            payload = {
+                "target_column": column,
+                "column_profile": evidence["column_profiles"][column],
+                "current_interpretation": column_interp.get(column),
+                "other_resolved_columns": other_resolved,
+                "reason": reason,
+            }
+        elif skill_name == "explain_sparsity":
+            payload = {
+                "target_column": column,
+                "column_profile": evidence["column_profiles"][column],
+                "current_interpretation": column_interp.get(column),
+                "table_summary": evidence["table"],
+                "reason": reason,
+            }
+        elif skill_name == "reconcile_type_meaning":
+            payload = {
+                "target_column": column,
+                "column_profile": evidence["column_profiles"][column],
+                "semantic_type": semantic_type.get(column),
+                "current_interpretation": column_interp.get(column),
+                "reason": reason,
+            }
+        else:
+            raise ValueError(f"알 수 없는 보완 skill: {skill_name}")
+
+        return self._call_skill(
+            skill_name, payload, label=f"{skill_name}:{column}", column=column
+        )

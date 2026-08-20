@@ -27,7 +27,12 @@ import argparse
 from pathlib import Path
 
 from column_semantics.adapters.env import load_dotenv
-from column_semantics.app import DEFAULT_SKILL_DIR, analyze_csv, output_paths
+from column_semantics.app import (
+    DEFAULT_PROMPT_DIR,
+    DEFAULT_SKILL_DIR,
+    analyze_csv,
+    output_paths,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,7 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("csv", type=Path, help="입력 CSV 경로")
     parser.add_argument(
-        "--skills", type=Path, default=DEFAULT_SKILL_DIR, help="skills 폴더 경로"
+        "--prompts",
+        type=Path,
+        default=DEFAULT_PROMPT_DIR,
+        help="고정 단계 프롬프트 폴더 경로",
+    )
+    parser.add_argument(
+        "--skills", type=Path, default=DEFAULT_SKILL_DIR, help="보완 skill 폴더 경로"
     )
     parser.add_argument(
         "--output",
@@ -62,6 +73,7 @@ def main(argv: list[str] | None = None) -> None:
 
     analyze_csv(
         csv_path=csv_path,
+        prompt_dir=args.prompts.resolve(),
         skill_dir=args.skills.resolve(),
         max_rounds=args.max_rounds,
         output=output,
