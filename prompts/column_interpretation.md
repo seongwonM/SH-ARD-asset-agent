@@ -28,17 +28,27 @@ they are decided here, once.
    defend ("장비별로 기록되는 압력 계열 수치, 단위 미상"), and move the rest into `domain_gap`: what is missing,
    why this data cannot settle it, and what source would. If you can identify the referent, set `domain_gap` to
    null.
-6. **Structural resolution and domain identification are different axes.** `status: "resolved"` means the naming
+6. **A meaning that still lists alternatives has not identified anything.** Hedged wording reads as an answer
+   while leaving the reader with the same open questions:
+
+       "장비 또는 공정이 위치하는 시설(공장, 동, 라인 등)을 식별하는 코드"
+
+   This says it might be about equipment or about a process, and the facility might be a plant, a building or a
+   line - four unresolved choices dressed as one description. Write what you can defend ("설비 마스터의 위치를
+   가리키는 코드"), and put **each remaining choice** into `domain_gap.missing` as the choice it is: "장비 기준인지
+   공정 기준인지", "공장·동·라인 중 어느 층위인지". `또는`, `혹은`, `~ 등`, `~로 추정`, `~일 수 있음`이
+   `selected_meaning`에 남아 있으면 `domain_gap`은 반드시 채워져 있어야 한다 - 둘 중 하나가 틀린 것이다.
+7. **Structural resolution and domain identification are different axes.** `status: "resolved"` means the naming
    and value evidence picked one candidate over the others; it does not mean you know what the column is in
    business terms. A column can be `resolved` and still carry a `domain_gap`, and that combination is an honest,
    useful answer - far more useful than an ambiguous status attached to a vague sentence.
-7. State units/scale only when supported by data/name/context. Never guess seconds/minutes merely because the
+8. State units/scale only when supported by data/name/context. Never guess seconds/minutes merely because the
    column is temporal/numeric — same for percent/ratio: don't assume a 0-100 or 0-1 scale by convention, check
    `column_profile`'s own observed min/max and state which scale it actually is (e.g. `unit: "percent_0_100"` vs
    `"fraction_0_1"`). `semantic_validation` will test row values against exactly the scale you state here, so a
    wrong guess here becomes a false "this isn't actually a percent" failure downstream.
-8. "High confidence" is not "ground truth"; leave evidence trails.
-9. If `revision_feedback.checks` is present, it may include entries about columns other than `target_column` — only
+9. "High confidence" is not "ground truth"; leave evidence trails.
+10. If `revision_feedback.checks` is present, it may include entries about columns other than `target_column` — only
    act on ones that actually name `target_column`. For those, treat the entry as a falsified hypothesis (the
    contradiction is in `measured` - the executor's actual measurement - vs `expected_constraint`): either (a) pick
    a different meaning_candidate (and update `selected_meaning` to match) consistent with `measured`, (b) add the

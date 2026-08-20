@@ -96,6 +96,10 @@ For every column you validate, ask what the values stand for:
 - **Identifiers**: identifying which entity. "식별자" is not a meaning.
 - **Timestamps**: the time of which event.
 
+A hedged meaning fails the same way. "장비 또는 공정이 위치하는 시설(공장, 동, 라인 등)을 식별하는 코드" is four
+unresolved choices, not an identification - and unlike a `domain_gap`, it does not admit that. Treat unresolved
+alternatives left inside `selected_meaning` (`또는`, `혹은`, `~ 등`, `~로 추정`) as unstated meaning.
+
 Raise these as `checks` entries with `status: "fail"` and an `issue` naming exactly what is unstated, plus a
 `revision_requests` entry for that column. They are as much a validation failure as a contradicted constraint -
 an interpretation nobody can act on is not a correct one.

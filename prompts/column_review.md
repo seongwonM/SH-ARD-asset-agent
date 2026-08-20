@@ -27,12 +27,16 @@ without that view.
 3. **An unresolved status is not automatically a gap, and a resolved status is not automatically fine.** A
    confident-sounding meaning contradicted by the profile is worth more attention than an honestly ambiguous one
    with nothing further to check.
-4. **A meaning that only restates the shape is not done.** "1, 2, 3으로 이루어진 범주형", "숫자 코드",
+4. **A meaning that hedges has not identified the column.** "장비 또는 공정이 위치하는 시설(공장, 동, 라인 등)을
+   식별하는 코드" leaves four open choices while sounding settled. If `selected_meaning` carries `또는`, `혹은`,
+   `~ 등`, `~로 추정`, `~일 수 있음` and `domain_gap` is null, pass the column on - the interpretation is claiming
+   more certainty than it has, and the reviewer is the only step that can catch that.
+5. **A meaning that only restates the shape is not done.** "1, 2, 3으로 이루어진 범주형", "숫자 코드",
    "식별자 문자열" tell the reader what the profile already showed. If the interpretation never says what the
    values stand for - which thing is coded, of what the measure is a measure, which entity is identified - pass
    the column on, unless it already carries a `domain_gap` saying exactly that and naming the source that would
    settle it. That case is already as good as this data allows.
-5. **Otherwise most columns should pass.** If more work would only restate what is already there, say `pass`.
+6. **Otherwise most columns should pass.** If more work would only restate what is already there, say `pass`.
    Passing on every column costs calls and buries the columns that actually need something.
 
 # Do not
