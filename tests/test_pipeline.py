@@ -477,6 +477,36 @@ def test_execution_trace_covers_every_skill(run_result):
     assert len(first_round["planner"]["raw"]["actions"]) == 5  # 정제 전 원본
 
 
+def test_a_dead_column_does_not_throw_away_the_others(equipment_df):
+    """컬럼 하나가 죽었다고 이미 해석한 나머지를 버리면, 그만큼의 호출이 헛돈다."""
+
+    class DiesOnOneColumn(FakeLLM):
+        def _on_column_interpretation(self, label, payload):
+            if payload["target_column"] == "power_limit":
+                raise RuntimeError("컨텍스트 초과")
+            return super()._on_column_interpretation(label, payload)
+
+    saved = []
+    with pytest.raises(RuntimeError):
+        run_pipeline(
+            equipment_df,
+            make_runner(DiesOnOneColumn()),
+            config=PipelineConfig(max_rounds=1, max_workers=4, on_checkpoint=saved.append),
+        )
+
+    # 죽는 순간에 쓰인 문서에 살아남은 컬럼의 해석이 들어 있어야 한다.
+    docs = saved[-1]
+    assert docs["columns"]["meta"]["status"] == "failed"
+    columns = docs["columns"]["columns"]
+    assert columns["run_id"]["final"]["interpretation"]["status"] == "resolved"
+    # 죽은 컬럼은 비어 있되, 왜 비었는지가 단계 이력에 남는다.
+    assert columns["power_limit"]["final"]["interpretation"] is None
+    failure = next(
+        s for s in columns["power_limit"]["stages"] if s["stage"] == "column_interpretation"
+    )
+    assert "컨텍스트 초과" in failure["value"]["error"]
+
+
 def test_checkpoint_is_written_as_each_skill_finishes(equipment_df):
     saved = []
     run_pipeline(

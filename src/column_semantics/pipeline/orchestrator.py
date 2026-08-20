@@ -79,12 +79,32 @@ class PipelineConfig:
 
 def _parallel(max_workers: int, jobs: List[Any], fn: Callable[[Any], Any]) -> Dict[int, Any]:
     """jobs를 병렬 실행하고 {인덱스: 결과}를 돌려준다. 예외는 그대로 올라간다."""
+    outputs, errors = _parallel_collect(max_workers, jobs, fn)
+    for error in errors.values():
+        raise error
+    return outputs
+
+
+def _parallel_collect(
+    max_workers: int, jobs: List[Any], fn: Callable[[Any], Any]
+) -> Tuple[Dict[int, Any], Dict[int, BaseException]]:
+    """병렬 실행하되 성공한 것과 실패한 것을 갈라서 돌려준다.
+
+    하나가 죽었다고 끝난 나머지를 버리면, 컬럼 40개 중 39개를 이미 해석해놓고도
+    결과가 통째로 비어버린다 - 그 39번의 호출은 이미 지불한 비용이다. 죽는 것은
+    호출부가 정하고, 여기서는 무엇이 살아남았는지를 잃지 않는 것만 책임진다.
+    """
     outputs: Dict[int, Any] = {}
+    errors: Dict[int, BaseException] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(fn, job): i for i, job in enumerate(jobs)}
         for future in as_completed(futures):
-            outputs[futures[future]] = future.result()
-    return outputs
+            index = futures[future]
+            try:
+                outputs[index] = future.result()
+            except BaseException as e:  # noqa: BLE001 - 갈라 담고 호출부가 결정한다
+                errors[index] = e
+    return outputs, errors
 
 
 def interpret_columns_parallel(
@@ -105,18 +125,38 @@ def interpret_columns_parallel(
     merged: Dict[str, Any] = dict(existing or {})
 
     print(f"[PARALLEL] column_interpretation {len(columns)}개 컬럼 병렬 실행", flush=True)
-    outputs = _parallel(
+    outputs, errors = _parallel_collect(
         max_workers,
         columns,
         lambda col: runner.interpret_column(col, evidence, semantic_type_result, revision_feedback),
     )
     for i, col in enumerate(columns):
+        if i not in outputs:
+            continue
         before = merged.get(col)
         merged[col] = outputs[i]
         if history is not None:
             _record(history, col, "column_interpretation", before, outputs[i], stage_info)
 
-    return {"columns": merged}
+    document = {"columns": merged}
+    if errors:
+        # 살아남은 해석을 결과 슬롯에 먼저 넣는다. 그래야 죽을 때 쓰이는 문서에
+        # 39개가 남고, 실패한 컬럼만 비어 있는 상태로 파일에 남는다.
+        results["column_interpretation"] = document
+        failed = [columns[i] for i in sorted(errors)]
+        for i in sorted(errors):
+            col = columns[i]
+            if history is not None:
+                history.record(
+                    col,
+                    "column_interpretation",
+                    {"error": f"{type(errors[i]).__name__}: {errors[i]}"},
+                    **(stage_info or {}),
+                )
+        print(f"[FAIL] column_interpretation 실패 {len(failed)}개 컬럼: {', '.join(failed)}", flush=True)
+        raise next(iter(errors[i] for i in sorted(errors)))
+
+    return document
 
 
 def validate_grouped(
@@ -149,13 +189,19 @@ def validate_grouped(
         flush=True,
     )
 
-    outputs = _parallel(
+    outputs, errors = _parallel_collect(
         max_workers,
         jobs,
         lambda job: runner.validate_group(
             job[1], evidence, results, revision_feedback, job[0]
         ),
     )
+    if errors:
+        print(
+            f"[FAIL] semantic_validation 실패 {len(errors)}/{len(jobs)}개 단위 - "
+            "성공한 단위의 check는 남긴다",
+            flush=True,
+        )
 
     merged_checks: List[Dict[str, Any]] = []
     merged_requests: List[Dict[str, Any]] = []
@@ -174,12 +220,19 @@ def validate_grouped(
         if isinstance(check, dict):
             check["check_id"] = f"r{round_idx}-c{i}"
 
-    return {
+    validation = {
         "overall_status": "needs_revision" if any_needs_revision else "pass",
         "checks": merged_checks,
         "revision_requests": merged_requests,
         "validated_columns": merged_validated,
     }
+    if errors:
+        # 검증을 끝까지 못 했으면 "pass"라고 말할 수 없다. 죽기 전에 결과 슬롯에
+        # 넣어두되, 통과로 읽히지 않게 상태를 남긴다.
+        validation["overall_status"] = "incomplete"
+        results["semantic_validation"] = validation
+        raise next(iter(errors[i] for i in sorted(errors)))
+    return validation
 
 
 def review_columns_parallel(
