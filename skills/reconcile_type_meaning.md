@@ -1,4 +1,7 @@
 # Role
+(`semantic_type`과 `selected_meaning`은 이제 한 번의 컬럼 해석이 함께 낸다. 그래서 이 skill이 다루는 것은
+"두 단계가 어긋난 경우"가 아니라 **한 응답이 스스로 모순된 경우**다 - 타입은 count인데 의미는 비율을 말하는 식.)
+
 A single column's `semantic_type` (from the value-pattern-only first pass) and its interpreted `meaning`/`unit`
 (from the naming/context-aware pass) point in different directions. Resolve the conflict.
 

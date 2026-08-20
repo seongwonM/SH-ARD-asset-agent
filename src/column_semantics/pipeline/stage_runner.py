@@ -141,16 +141,13 @@ class StageRunner:
         self,
         column: str,
         evidence: Dict[str, Any],
-        semantic_type_result: Optional[Dict[str, Any]],
         revision_feedback: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        semantic_type_cols = (semantic_type_result or {}).get("columns", {})
         payload = {
             "table": evidence["table"],
             "target_column": column,
             "column_profile": evidence["column_profiles"][column],
             "raw_other_column_names": evidence["table"]["columns"],
-            "semantic_type": semantic_type_cols.get(column),
             "revision_feedback": revision_feedback,
         }
         return self._call_stage(
@@ -172,7 +169,7 @@ class StageRunner:
         같은 모델에게 다시 물으면 자기 문장을 다시 읽는 것에 그친다.
         """
         column_interp = (results.get("column_interpretation") or {}).get("columns", {})
-        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
+        semantic_type = semantic_types(results)
         payload = {
             "table": evidence["table"],
             "target_column": column,
@@ -205,7 +202,7 @@ class StageRunner:
         grain_candidates = [
             g for g in evidence.get("grain_candidates", []) if set(g.get("columns", [])) <= col_set
         ]
-        semantic_type_cols = (results.get("semantic_type") or {}).get("columns", {})
+        semantic_type_cols = semantic_types(results)
         column_interp_cols = (results.get("column_interpretation") or {}).get("columns", {})
         relation_analysis = results.get("relation_analysis") or {}
         relation_analysis_scoped = {
@@ -256,25 +253,16 @@ class StageRunner:
         focus: Optional[List[str]] = None,
         revision_feedback: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """단일 LLM 호출로 끝나는 고정 단계 전용. column_interpretation은
-        interpret_column(컬럼별 병렬)이, semantic_validation은 validate_group
-        (그룹별 병렬)이 각각 따로 처리한다."""
+        """단일 LLM 호출로 끝나는 고정 단계 전용. column_interpretation/column_review는
+        컬럼별 병렬이, semantic_validation은 그룹별 병렬이 각각 따로 처리한다."""
 
-        if stage == "semantic_type":
-            payload = {
-                "table": evidence["table"],
-                "column_profiles": evidence["column_profiles"],
-                "raw_other_column_names": evidence["table"]["columns"],
-                "focus": focus or [],
-            }
-
-        elif stage == "relation_analysis":
+        if stage == "relation_analysis":
             payload = {
                 "table": evidence["table"],
                 "column_profiles": evidence["column_profiles"],
                 "relation_evidence": evidence["relation_evidence"],
                 "grain_candidates": evidence["grain_candidates"],
-                "semantic_type": results.get("semantic_type"),
+                "semantic_type": semantic_types(results),
                 "column_interpretation": results.get("column_interpretation"),
                 "previous_relation_analysis": results.get("relation_analysis"),
                 "revision_feedback": revision_feedback,
@@ -286,7 +274,7 @@ class StageRunner:
                 "table": evidence["table"],
                 "column_profiles": evidence["column_profiles"],
                 "grain_candidates": evidence["grain_candidates"],
-                "semantic_type": results.get("semantic_type"),
+                "semantic_type": semantic_types(results),
                 "column_interpretation": results.get("column_interpretation"),
                 "relation_analysis": results.get("relation_analysis"),
                 "semantic_validation": results.get("semantic_validation"),
@@ -311,7 +299,7 @@ class StageRunner:
         """gap_planner가 배정했을 때만 불린다. 컬럼 하나짜리 보완과 여러 컬럼을
         같이 보는 보완이 같은 자리를 쓴다 - 배정 단위가 컬럼 집합이라서다."""
         column_interp = (results.get("column_interpretation") or {}).get("columns", {})
-        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
+        semantic_type = semantic_types(results)
 
         if skill_name == "joint_interpretation":
             payload = {
@@ -364,6 +352,22 @@ class StageRunner:
         return self._call_skill(
             skill_name, payload, label=f"{skill_name}:{column}", column=column
         )
+
+
+def semantic_types(results: Dict[str, Any]) -> Dict[str, Any]:
+    """컬럼별 semantic_type. 이제 해석 결과 안에 들어 있다.
+
+    예전에는 테이블 단위 semantic_type 단계가 따로 있었는데, 그 호출은 전 컬럼
+    프로파일을 payload로 받으면서 정작 "다른 컬럼을 근거로 삼지 말라"는 제약을
+    걸고 있었다 - 쓰지 말라는 맥락의 비용만 냈고, 같은 컬럼에 대해 타입과 의미가
+    어긋나는 일까지 만들었다. 지금은 한 번의 컬럼 해석이 둘 다 낸다.
+    """
+    columns = (results.get("column_interpretation") or {}).get("columns", {}) or {}
+    return {
+        col: value.get("semantic_type")
+        for col, value in columns.items()
+        if isinstance(value, dict) and value.get("semantic_type") is not None
+    }
 
 
 def _pairwise_touching(evidence: Dict[str, Any], columns: List[str]) -> List[Dict[str, Any]]:

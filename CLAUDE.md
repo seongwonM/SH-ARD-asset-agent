@@ -57,7 +57,7 @@ probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **
 
 | | 폴더 | 실행 결정 | 예 |
 |---|---|---|---|
-| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | semantic_type, column_interpretation, column_review, semantic_validation, table_context |
+| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | column_interpretation, column_review, relation_analysis, semantic_validation, table_context |
 | 보완 skill | `skills/` | `column_review` → `gap_planner`를 거쳐 배정 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning, joint_interpretation |
 
 **항상 나와야 하는 산출물을 skill로 만들지 말 것.** 컬럼 해석과 테이블 맥락은
@@ -99,8 +99,8 @@ gap_planner에게 맡긴 지점이다.
 ### 병렬 실행
 컬럼별(`column_interpretation`, `column_review`, 보완 skill)과 관계 그룹별
 (`semantic_validation`)만
-병렬로 돈다. 테이블 단위 고정 단계(`semantic_type`, `relation_analysis`,
-`table_context`)는 항상 단독 실행한다 — 같은 결과 슬롯에 둘이 동시에 쓰면
+병렬로 돈다. 테이블 단위 고정 단계(`relation_analysis`, `table_context`)는
+항상 단독 실행한다 — 같은 결과 슬롯에 둘이 동시에 쓰면
 마지막 승자가 비결정적이다. 동시 실행 상한은 `LLM_MAX_CONCURRENCY`(RateLimiter)
 하나로 통제한다. 새 병렬 지점을 만들 때 `max_workers`를 따로 정하지 말 것.
 
@@ -124,6 +124,17 @@ gap_planner에게 맡긴 지점이다.
 있는 조합은 정상이고, 오히려 정직한 답이다. 필드로 빠져 있어야 "몇 개 컬럼이
 아직 무엇인지 모르는가"를 세어볼 수 있고, `would_resolve`가 모이면 어떤 자료를
 구해와야 하는지가 목록이 된다.
+
+### 컬럼 하나에 대한 판단은 한 호출에서 끝낸다
+타입(`semantic_type`)과 의미는 같은 컬럼을 같은 근거로 읽는 일이라 `column_interpretation`
+한 번이 둘 다 낸다. 예전에는 테이블 단위 `semantic_type` 단계가 따로 있었는데,
+그 호출은 **전 컬럼 프로파일**을 payload로 받으면서 정작 프롬프트로는 "다른 컬럼을
+근거로 삼지 말라"고 막고 있었다 - 쓰지 말라는 맥락에 컨텍스트를 다 쓰고, 컬럼 수가
+늘면 그 한 번의 호출이 먼저 터졌다. 게다가 타입과 의미가 서로 어긋나는 일까지
+만들어 그걸 다시 붙이는 보완 skill이 필요했다.
+
+**컬럼 단위 판단을 테이블 단위 호출로 만들지 말 것.** 컬럼 수에 비례해 커지는
+payload는 그 자체가 단일 실패 지점이다.
 
 ### 프롬프트가 요구한 출력은 반드시 쓰인다
 프롬프트에 "이런 필드를 내라"고 적었으면 파이프라인이 그 필드를 실제로 소비해야

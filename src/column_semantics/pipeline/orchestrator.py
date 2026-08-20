@@ -7,7 +7,7 @@
 
 구조:
 
-    1차 pass   semantic_type -> column_interpretation(컬럼별 병렬)
+    1차 pass   column_interpretation(컬럼별 병렬, 타입+의미를 한 번에)
                -> column_review(컬럼별 병렬)                          [고정 단계]
     gap 보충   검토가 넘긴 컬럼이 있을 때만 gap_planner -> 배정 병렬 실행 [보완 skill]
     관계       relation_analysis(pairwise 증거 있을 때만)             [고정 단계]
@@ -121,14 +121,13 @@ def interpret_columns_parallel(
     """columns 각각에 대해 column_interpretation을 병렬 호출한다. existing이 있으면
     (재검증 라운드에서 focus로 좁힌 경우) 그 위에 columns만 덮어쓰고 나머지 컬럼은
     이전 라운드 결과를 유지한다."""
-    semantic_type_result = results.get("semantic_type")
     merged: Dict[str, Any] = dict(existing or {})
 
     print(f"[PARALLEL] column_interpretation {len(columns)}개 컬럼 병렬 실행", flush=True)
     outputs, errors = _parallel_collect(
         max_workers,
         columns,
-        lambda col: runner.interpret_column(col, evidence, semantic_type_result, revision_feedback),
+        lambda col: runner.interpret_column(col, evidence, revision_feedback),
     )
     for i, col in enumerate(columns):
         if i not in outputs:
@@ -469,10 +468,10 @@ def _record_stage_columns(
 ) -> None:
     """테이블 단위 고정 단계가 컬럼별로 낸 값을 컬럼 이력에 흩뿌린다.
 
-    semantic_type은 `columns`, relation_analysis는 `revised_columns`에 컬럼별
-    판단을 담는다 - 그 두 개만 컬럼 이력의 재료가 된다.
+    relation_analysis의 `revised_columns`만 여기 해당한다 - 나머지 테이블 단위
+    단계는 컬럼별 판단을 담지 않는다.
     """
-    key = {"semantic_type": "columns", "relation_analysis": "revised_columns"}.get(stage)
+    key = {"relation_analysis": "revised_columns"}.get(stage)
     if key is None:
         return
     previous = (before or {}).get(key) or {}
@@ -704,7 +703,6 @@ def run_pipeline(
             return record
 
         with runner.stage(stage="first_pass", round=1):
-            exec_stage("semantic_type", phase="exec")
             exec_columns(phase="exec", columns=all_columns)
 
         # -- 검토 -> gap 보충 -------------------------------------------------

@@ -3,13 +3,13 @@ You are the *replan* step for a CSV schema-semantics PoC. The first, independent
 gap-resolution already ran; `semantic_validation` then tested the result against real data and found contradictions.
 Decide which fixed stages need to rerun to resolve them.
 
-You are never called for the first pass — that sequence is fixed in code (`semantic_type` → `column_interpretation`
-→ `relation_analysis` if there's pairwise evidence). You only ever see `validation_feedback` from a completed
+You are never called for the first pass — that sequence is fixed in code (`column_interpretation` →
+`column_review` → gap supplements → `relation_analysis` if there's pairwise evidence). You only ever see `validation_feedback` from a completed
 validation, so plan accordingly.
 
 # Available stages
-- semantic_type: infer semantic value types from each column's own name/value/profile evidence.
-- column_interpretation: expand abbreviations and generate ranked meaning candidates for every column.
+- column_interpretation: read each column on its own and decide both its semantic value type and its meaning
+  (one parallel call per column).
 - relation_analysis: use pairwise/group/temporal/hierarchy evidence to revise or disambiguate candidates.
 - semantic_validation: test the proposed meanings against data-derived constraints and identify contradictions.
 

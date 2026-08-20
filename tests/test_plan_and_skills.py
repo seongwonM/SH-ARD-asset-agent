@@ -31,15 +31,15 @@ def test_sanitize_plan_drops_unknown_stages_and_duplicates():
         {
             "steps": [
                 {"stage": "table_context"},
-                {"stage": "semantic_type"},
-                {"stage": "semantic_type"},
+                {"stage": "relation_analysis"},
+                {"stage": "relation_analysis"},
                 {"stage": "make_coffee"},
                 {"stage": "explain_sparsity"},  # 보완 skill은 재계획 대상이 아니다
                 "not a dict",
             ]
         }
     )
-    assert [s["stage"] for s in plan["steps"]] == ["semantic_type", "table_context"]
+    assert [s["stage"] for s in plan["steps"]] == ["relation_analysis", "table_context"]
 
 
 def test_revision_always_ends_in_validation_and_drops_table_context():
@@ -49,9 +49,9 @@ def test_revision_always_ends_in_validation_and_drops_table_context():
 
 def test_revision_keeps_declared_validation_once():
     steps = revision_steps(
-        {"steps": [{"stage": "semantic_validation", "focus": []}, {"stage": "semantic_type", "focus": []}]}
+        {"steps": [{"stage": "semantic_validation", "focus": []}, {"stage": "relation_analysis", "focus": []}]}
     )
-    assert [s["stage"] for s in steps] == ["semantic_type", "semantic_validation"]
+    assert [s["stage"] for s in steps] == ["relation_analysis", "semantic_validation"]
 
 
 def test_review_gate_decides_whether_the_planner_runs():
@@ -167,12 +167,11 @@ def test_gap_actions_tolerate_missing_field():
 
 def test_relation_analysis_only_when_pairwise_evidence_exists():
     assert first_pass_stages(True) == [
-        "semantic_type",
         "column_interpretation",
         "column_review",
         "relation_analysis",
     ]
-    assert first_pass_stages(False) == ["semantic_type", "column_interpretation", "column_review"]
+    assert first_pass_stages(False) == ["column_interpretation", "column_review"]
 
 
 def test_each_folder_has_every_prompt_it_must_have():
@@ -186,8 +185,8 @@ def test_each_folder_has_every_prompt_it_must_have():
 
 def test_missing_prompt_file_fails_loudly(tmp_path):
     with pytest.raises(RuntimeError) as e:
-        FileSystemPrompts(tmp_path, required=["semantic_type"])
-    assert "semantic_type" in str(e.value)
+        FileSystemPrompts(tmp_path, required=["column_interpretation"])
+    assert "column_interpretation" in str(e.value)
 
 
 def test_the_two_folders_do_not_overlap():
@@ -208,5 +207,5 @@ def test_replan_cannot_pick_the_review_stage():
     """검토는 보완 루프가 스스로 다시 도는 것이지, 검증 실패 때 되돌아갈 지점이 아니다."""
     assert "column_review" in STAGE_ORDER
     assert "column_review" not in REPLAN_STAGES
-    plan = sanitize_plan({"steps": [{"stage": "column_review"}, {"stage": "semantic_type"}]})
-    assert [s["stage"] for s in plan["steps"]] == ["semantic_type"]
+    plan = sanitize_plan({"steps": [{"stage": "column_review"}, {"stage": "relation_analysis"}]})
+    assert [s["stage"] for s in plan["steps"]] == ["relation_analysis"]

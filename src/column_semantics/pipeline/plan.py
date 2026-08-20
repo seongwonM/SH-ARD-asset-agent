@@ -35,7 +35,6 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 # 고정 단계의 정규 순서.
 STAGE_ORDER = [
-    "semantic_type",
     "column_interpretation",
     "column_review",
     "relation_analysis",
@@ -75,7 +74,7 @@ REQUIRED_SKILLS = list(GAP_SKILLS)
 def first_pass_stages(has_pairwise_evidence: bool) -> List[str]:
     """1차 고정 순서. relation_analysis만 데이터 근거로 조건부 포함한다 -
     pairwise 증거가 하나도 없으면 볼 게 없어서 호출 자체가 낭비다."""
-    stages = ["semantic_type", "column_interpretation", "column_review"]
+    stages = ["column_interpretation", "column_review"]
     if has_pairwise_evidence:
         stages.append("relation_analysis")
     return stages

@@ -94,21 +94,18 @@ class FakeLLM:
 
     # -- skill별 응답 ----------------------------------------------------
 
-    def _on_semantic_type(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "columns": {c: {"semantic_type": "identifier"} for c in payload["table"]["columns"]}
-        }
-
     def _on_column_interpretation(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         column = payload["target_column"]
+        typed = {"semantic_type": {"type": "identifier", "confidence": 0.6}}
         if payload.get("revision_feedback") is not None:
-            return {"status": "resolved", "selected_meaning": f"{column}의 의미(재해석)"}
+            return {**typed, "status": "resolved", "selected_meaning": f"{column}의 의미(재해석)"}
         # power_value만 애매하게 두어 gap skill이 붙는 경로를 만든다.
         if column == "power_value":
-            return {"status": "ambiguous", "candidates": ["출력", "소비전력"]}
+            return {**typed, "status": "ambiguous", "candidates": ["출력", "소비전력"]}
         # status는 resolved인데 도메인은 못 밝힌 컬럼. 두 축이 별개라는 걸 보여준다.
         if column == "status_code":
             return {
+                **typed,
                 "status": "resolved",
                 "selected_meaning": "0/1 두 값만 갖는 상태 플래그",
                 "domain_gap": {
@@ -117,7 +114,12 @@ class FakeLLM:
                     "would_resolve": ["공통코드 표", "컬럼 코멘트"],
                 },
             }
-        return {"status": "resolved", "selected_meaning": f"{column}의 의미", "domain_gap": None}
+        return {
+            **typed,
+            "status": "resolved",
+            "selected_meaning": f"{column}의 의미",
+            "domain_gap": None,
+        }
 
     def _on_relation_analysis(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {

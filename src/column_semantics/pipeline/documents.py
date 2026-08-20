@@ -62,7 +62,6 @@ def _columns_doc(
     무엇을 바꿨는지(before/after/changed)가 거기 남는다.
     """
     interpretation = (results.get("column_interpretation") or {}).get("columns", {}) or {}
-    semantic_type = (results.get("semantic_type") or {}).get("columns", {}) or {}
     validated = (results.get("semantic_validation") or {}).get("validated_columns", {}) or {}
     stages = history.columns(columns_order)
 
@@ -70,7 +69,11 @@ def _columns_doc(
         "columns": {
             col: {
                 "final": {
-                    "semantic_type": semantic_type.get(col),
+                    # 타입은 해석 안에 있다(같은 호출이 함께 낸다). 여기서 한 번 더
+                    # 꺼내 두는 것은 읽는 쪽 편의고, 값은 해석의 것 그대로다.
+                    "semantic_type": (interpretation.get(col) or {}).get("semantic_type")
+                    if isinstance(interpretation.get(col), dict)
+                    else None,
                     "interpretation": interpretation.get(col),
                     "validated": validated.get(col),
                 },

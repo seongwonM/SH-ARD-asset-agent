@@ -75,11 +75,11 @@ def test_document_set_is_stable(run_result):
 def test_first_pass_runs_in_fixed_order(run_result):
     llm, _ = run_result
     labels = llm.labels()
-    assert labels[0] == "semantic_type"
-    # 1차 해석은 컬럼별 병렬 호출이다.
+    # 1차 해석은 컬럼별 병렬 호출이고, 타입도 그 안에서 같이 나온다.
     interp = [x for x in labels if x.startswith("column_interpretation:")]
     assert len(interp) >= 6
-    assert labels.index("gap_planner") > labels.index("semantic_type")
+    assert labels[0].startswith("column_interpretation:")
+    assert labels.index("gap_planner") > labels.index("column_review:run_id")
 
 
 def test_column_payload_is_scoped_to_that_column(run_result):
@@ -106,8 +106,8 @@ def test_call_records_say_whether_it_was_a_fixed_stage_or_a_supplement(run_resul
     """호출 기록만 보고도 '코드가 돌린 것'과 '보완으로 붙은 것'이 갈려야 한다."""
     llm, _ = run_result
     kind = {c["label"]: c["context"]["kind"] for c in llm.calls}
-    assert kind["semantic_type"] == "stage"
     assert kind["column_interpretation:power_value"] == "stage"
+    assert kind["column_review:power_value"] == "stage"
     assert kind["table_context"] == "stage"
     assert kind["reconsider_ambiguous:power_value"] == "skill"
     # 계획 호출은 산출물이 아니라 실행 결정이라 둘 중 어느 쪽도 아니다.
@@ -150,7 +150,7 @@ def test_column_stages_keep_what_each_step_changed(equipment_df):
     )
     stages = docs["columns"]["columns"]["power_value"]["stages"]
     kinds = [s["stage"] for s in stages]
-    assert kinds[:3] == ["semantic_type", "column_interpretation", "column_review"]
+    assert kinds[:2] == ["column_interpretation", "column_review"]
     assert "gap" in kinds
 
     # 1차 해석 단계는 gap이 덮어쓰기 전 값을 그대로 들고 있어야 한다.
@@ -467,10 +467,10 @@ def test_execution_trace_covers_every_skill(run_result):
     _, docs = run_result
     execution = docs["plan"]["execution"]
     stages = {e["stage"] for e in execution if e.get("event") == "stage"}
-    assert {"semantic_type", "column_interpretation", "semantic_validation", "table_context"} <= stages
+    assert {"column_interpretation", "column_review", "semantic_validation", "table_context"} <= stages
     assert all("elapsed_seconds" in e for e in execution)
     # 1차 고정 순서와 gap 라운드도 계획 문서 안에 있다.
-    assert docs["plan"]["first_pass"]["stages"][0] == "semantic_type"
+    assert docs["plan"]["first_pass"]["stages"][0] == "column_interpretation"
     first_round = docs["plan"]["gap_rounds"][0]
     assert first_round["flagged"] == ["power_value"]
     assert [a["action"] for a in first_round["actions"]] == ["reconsider_ambiguous"]

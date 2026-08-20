@@ -10,7 +10,7 @@ without that view.
 - `column_profile`: what the data actually shows for this column (dtypes, cardinality, null/zero ratios,
   sample values, numeric/datetime/text profiles). This is measured, not claimed.
 - `interpretation`: what the previous step concluded this column means. This is a claim.
-- `semantic_type`: the type assigned in the first pass. Also a claim.
+- `semantic_type`: the type the same call assigned. Also a claim, from the same reading as `interpretation`.
 - `pairwise_evidence`: measured relationships between this column and others (correlation, value overlap,
   difference patterns). The step that wrote `interpretation` never saw this.
 - `other_column_names`: raw names only, no interpretations.

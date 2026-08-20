@@ -65,12 +65,17 @@ import하면 "LLM 없이 프로파일링만 검증"이 불가능해진다.
 
 ```
 [고정 단계 · prompts/]  코드가 정한 순서. 무조건 만들어야 하는 산출물이다
-1차    semantic_type → column_interpretation(컬럼별 병렬) → relation_analysis*
+1차    column_interpretation(컬럼별 병렬 — 타입과 의미를 한 번에)
+       → column_review(컬럼별 병렬 — 더 볼지 말지만)
+
+[보완 skill · skills/]  검토가 넘긴 컬럼에만 붙는다
+gap    넘어온 컬럼 있음 → gap_planner가 무엇을 할지 결정 → 배정된 skill 병렬 실행
+       → 바뀐 컬럼만 재검토 (최대 2라운드)
+
+[고정 단계]
+관계   relation_analysis*
 검증   관계 그룹별 semantic_validation 병렬 → probe로 실측 대조
 마무리 table_context
-
-[보완 skill · skills/]  그 컬럼에 필요할 때만 붙는다
-gap    gap_planner가 컬럼별로 부족한 점 판단 → 배정된 skill만 병렬 실행
 
 수정   needs_revision이면 planner가 재계획 → 해당 고정 단계만 재실행 → 재검증
 ```

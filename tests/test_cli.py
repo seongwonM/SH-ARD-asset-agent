@@ -58,7 +58,7 @@ def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
     assert columns["meta"]["requests_per_minute"] >= 1
     assert columns["columns"]["power_value"]["stages"]
     assert read(paths["table"])["table_context"]["grain"]
-    assert read(paths["plan"])["first_pass"]["stages"][0] == "semantic_type"
+    assert read(paths["plan"])["first_pass"]["stages"][0] == "column_interpretation"
 
     calls = read(paths["llm_calls"])
     assert calls["prompts"]["column_interpretation"].startswith("#")
@@ -118,12 +118,12 @@ def test_several_models_without_output_root_is_refused(tmp_path, equipment_csv, 
 
 def test_one_model_failing_does_not_stop_the_others(tmp_path, equipment_csv, monkeypatch):
     class DiesOnB(FakeLLM):
-        def _on_semantic_type(self, label, payload):
+        def _on_column_interpretation(self, label, payload):
             import os
 
             if os.environ["LLM_MODEL"] == "modelB":
                 raise RuntimeError("엔드포인트 죽음")
-            return super()._on_semantic_type(label, payload)
+            return super()._on_column_interpretation(label, payload)
 
     monkeypatch.setattr(
         app, "make_llm_from_env", lambda **kwargs: DiesOnB(llm_log=kwargs["llm_log"])

@@ -1,7 +1,11 @@
 # Role
-Generate lexical expansions and ranked semantic meaning candidates for a single column (`target_column`). Every
-column is interpreted through a separate, parallel call like this one — you only see this one column's own profile,
-plus the raw names of every other column for naming-convention context.
+Read a single column (`target_column`) and decide two things together: its semantic value type, and what it
+actually means. Every column goes through a separate, parallel call like this one — you see this one column's own
+profile plus the raw names of every other column for naming-convention context, and nothing else.
+
+Type and meaning used to be two separate passes, which meant a table-wide call had to carry every column's profile
+just to label types, and the two could disagree about the same column. They are one reading of one column, so
+they are decided here, once.
 
 # Core principles
 1. Split `target_column`'s name by delimiters and naming patterns. Expand ambiguous tokens into candidate full
@@ -47,6 +51,21 @@ plus the raw names of every other column for naming-convention context.
 Write `meaning`, `evidence`, and `counter_evidence` in Korean (한국어). `expansions[].word` may stay in whatever
 language the expanded token actually is (an English abbreviation expands to an English word; do not force-translate it).
 
+# Semantic type
+
+Decide this column's semantic value type in the same pass, from the same evidence: its raw name, token
+candidates, physical dtype, values, cardinality, null ratio, distribution and simple patterns. Use one of:
+
+identifier, categorical_nominal, categorical_ordinal, boolean, count, quantity, ratio, percentage, currency,
+measurement, timestamp, date, duration, rank, status, free_text, code, unknown.
+
+A numeric physical dtype is not automatically a `quantity`. Small integer domains such as {1,2,3} may be
+category/status/rank. A string can be an identifier or a code.
+
+**The type and the meaning must agree.** They come from one reading of one column, so `semantic_type: count` with
+a meaning describing a percentage is not a disagreement to be resolved later - it means you have not settled the
+reading yet. Pick the pair that the evidence supports, or say `unknown` and leave the column `ambiguous`.
+
 # Output
 Return JSON only — this is `target_column`'s interpretation directly, not wrapped in a column-name key:
 {
@@ -68,6 +87,12 @@ Return JSON only — this is `target_column`'s interpretation directly, not wrap
       "counter_evidence": ["..."]
     }
   ],
+  "semantic_type": {
+    "type": "identifier | categorical_nominal | ... | unknown",
+    "confidence": 0.0,
+    "evidence": ["..."],
+    "alternatives": [{"type": "...", "confidence": 0.0}]
+  },
   "selected_meaning": {
     "meaning": "... (copy of the top meaning_candidates[0].meaning, always set)",
     "unit": null
