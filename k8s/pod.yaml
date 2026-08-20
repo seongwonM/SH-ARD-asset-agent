@@ -23,7 +23,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: sh-ard-asset-agent
-      image: ghcr.io/seongwonm/sh-ard-asset-agent:c7741f395763f402cce24b0ed88fa4884842be77
+      image: ghcr.io/seongwonm/sh-ard-asset-agent:e71892e58dce45a9614b8f17fd11689e4ee2281b
       imagePullPolicy: Always
       command: ["sleep", "infinity"]
       envFrom:
