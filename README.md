@@ -93,7 +93,7 @@ LLM 판단이 아니라 데이터 조건이다.
 
 | 파일 | 담는 것 |
 |---|---|
-| `<out>.columns.json` | 컬럼별 해석이 단계마다 어떻게 바뀌었는지 (`stages`의 before/after/changed) |
+| `<out>.columns.json` | 컬럼별 해석이 단계마다 어떻게 바뀌었는지 (`stages`의 before/after/changed). 도메인을 못 밝힌 컬럼은 `domain_gap`에 무엇이 모자란지가 남는다 |
 | `<out>.rulebase.json` | 룰베이스 계산값 전부 — 프로파일, 관계 증거, grain 후보, probe 실측값 |
 | `<out>.plan.json` | 1차 고정 순서, gap 배정, 재계획 라운드(LLM 원출력 + 정제 결과), 실행 구간 |
 | `<out>.table.json` | 테이블 단위 산출물 — table_context, relation_analysis, 검증 라운드 |

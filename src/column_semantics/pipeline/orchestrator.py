@@ -298,7 +298,14 @@ def resolve_gaps(
             if not update or col not in columns:
                 continue
             before = dict(columns[col]) if isinstance(columns[col], dict) else columns[col]
-            for key in ("selected_meaning", "status", "sparsity_reason", "note", "evidence"):
+            for key in (
+                "selected_meaning",
+                "status",
+                "sparsity_reason",
+                "note",
+                "evidence",
+                "domain_gap",
+            ):
                 # None은 "이번엔 안 바꿈"이라는 뜻이라 - 있는 값을 null로 지워버리면 안 된다.
                 if update.get(key) is not None:
                     columns[col][key] = update[key]

@@ -17,13 +17,24 @@ plus the raw names of every other column for naming-convention context.
 4. Keep multiple candidates in `meaning_candidates` when evidence is insufficient, but always order them by
    confidence (highest first) and copy the top one's `meaning`/`unit` into `selected_meaning` — downstream steps use
    `selected_meaning` as *the* description, so it must be explicit, not left for the reader to infer from the list.
-5. State units/scale only when supported by data/name/context. Never guess seconds/minutes merely because the
+5. **Say only what the evidence supports, and put what you cannot identify in `domain_gap`.** The profile tells
+   you the shape of a column; it does not tell you which process, product or business object it belongs to. When
+   that referent is missing, do not pad `selected_meaning` with filler that sounds like an answer — "어떤 공정의
+   측정값", "무언가의 코드" carry no information and hide the fact that nobody knows yet. Write the part you can
+   defend ("장비별로 기록되는 압력 계열 수치, 단위 미상"), and move the rest into `domain_gap`: what is missing,
+   why this data cannot settle it, and what source would. If you can identify the referent, set `domain_gap` to
+   null.
+6. **Structural resolution and domain identification are different axes.** `status: "resolved"` means the naming
+   and value evidence picked one candidate over the others; it does not mean you know what the column is in
+   business terms. A column can be `resolved` and still carry a `domain_gap`, and that combination is an honest,
+   useful answer - far more useful than an ambiguous status attached to a vague sentence.
+7. State units/scale only when supported by data/name/context. Never guess seconds/minutes merely because the
    column is temporal/numeric — same for percent/ratio: don't assume a 0-100 or 0-1 scale by convention, check
    `column_profile`'s own observed min/max and state which scale it actually is (e.g. `unit: "percent_0_100"` vs
    `"fraction_0_1"`). `semantic_validation` will test row values against exactly the scale you state here, so a
    wrong guess here becomes a false "this isn't actually a percent" failure downstream.
-6. "High confidence" is not "ground truth"; leave evidence trails.
-7. If `revision_feedback.checks` is present, it may include entries about columns other than `target_column` — only
+8. "High confidence" is not "ground truth"; leave evidence trails.
+9. If `revision_feedback.checks` is present, it may include entries about columns other than `target_column` — only
    act on ones that actually name `target_column`. For those, treat the entry as a falsified hypothesis (the
    contradiction is in `measured` - the executor's actual measurement - vs `expected_constraint`): either (a) pick
    a different meaning_candidate (and update `selected_meaning` to match) consistent with `measured`, (b) add the
@@ -61,5 +72,13 @@ Return JSON only — this is `target_column`'s interpretation directly, not wrap
     "meaning": "... (copy of the top meaning_candidates[0].meaning, always set)",
     "unit": null
   },
+  "domain_gap": {
+    "missing": "무엇을 식별하지 못했는가 (예: 어느 공정의 어떤 물리량인지)",
+    "why": "이 데이터만으로 정할 수 없는 이유",
+    "would_resolve": ["이걸 풀어줄 자료 (공통코드 표, 컬럼 코멘트, 단위 표기 등)"]
+  },
   "status": "resolved | ambiguous"
 }
+
+Set `domain_gap` to null when the column's real-world referent is identified. Keep `would_resolve` concrete -
+name the kind of document or table that would answer it, not "더 많은 정보".

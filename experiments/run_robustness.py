@@ -68,6 +68,9 @@ def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         "llm_calls": len(documents["llm_calls"]["calls"]),
         "column_count": len(columns),
         "resolved_columns": sum(1 for v in interpretations if v.get("status") == "resolved"),
+        # 구조적으로 확정됐는지와 도메인을 식별했는지는 별개 축이다. 후자가 낮으면
+        # 프롬프트가 아니라 자료(공통코드/컬럼 코멘트)가 없어서 못 푸는 것이다.
+        "columns_with_domain_gap": sum(1 for v in interpretations if v.get("domain_gap")),
         "checks": len(checks),
         "probe_verified_checks": sum(1 for c in checks if c.get("probe_verified")),
         "failed_checks": sum(1 for c in checks if c.get("status") in {"warning", "fail"}),

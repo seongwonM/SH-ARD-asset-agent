@@ -334,6 +334,21 @@ def test_second_gap_round_only_revisits_columns_that_changed(run_result):
     assert rounds[1]["planner"] is None
 
 
+def test_a_column_can_be_resolved_and_still_unidentified(run_result):
+    """구조적 확정과 도메인 식별은 다른 축이다. 모른다는 사실이 문장에 녹지 않고
+    필드로 남아야 나중에 세어볼 수 있다."""
+    _, docs = run_result
+    columns = docs["columns"]["columns"]
+
+    unidentified = columns["status_code"]["final"]["interpretation"]
+    assert unidentified["status"] == "resolved"  # 후보는 하나로 좁혀졌지만
+    assert unidentified["domain_gap"]["missing"]  # 무엇인지는 모른다
+    assert unidentified["domain_gap"]["would_resolve"]
+
+    # 도메인까지 밝힌 컬럼은 그 자리가 비어 있다.
+    assert columns["run_id"]["final"]["interpretation"]["domain_gap"] is None
+
+
 def test_probe_refutes_llm_pass_and_triggers_revision(run_result):
     """이 파이프라인의 핵심 주장: 텍스트끼리 대조하는 게 아니라 데이터에 대고
     반증한다. LLM이 pass라고 써도 실측이 어긋나면 수정 라운드가 열려야 한다."""

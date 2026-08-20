@@ -106,7 +106,18 @@ class FakeLLM:
         # power_value만 애매하게 두어 gap skill이 붙는 경로를 만든다.
         if column == "power_value":
             return {"status": "ambiguous", "candidates": ["출력", "소비전력"]}
-        return {"status": "resolved", "selected_meaning": f"{column}의 의미"}
+        # status는 resolved인데 도메인은 못 밝힌 컬럼. 두 축이 별개라는 걸 보여준다.
+        if column == "status_code":
+            return {
+                "status": "resolved",
+                "selected_meaning": "0/1 두 값만 갖는 상태 플래그",
+                "domain_gap": {
+                    "missing": "0과 1이 각각 어느 상태를 뜻하는지",
+                    "why": "값이 코드일 뿐이고 이름 밖에 단서가 없다",
+                    "would_resolve": ["공통코드 표", "컬럼 코멘트"],
+                },
+            }
+        return {"status": "resolved", "selected_meaning": f"{column}의 의미", "domain_gap": None}
 
     def _on_relation_analysis(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
