@@ -11,13 +11,19 @@ DataFrame에 대고 평가해 실측값을 돌려준다.
 
 probe는 반증 도구다. 통과가 참을 증명하지 않고, 실패가 거짓을 증명한다.
 그리고 실행 실패(컬럼 없음/식 오류/표본 부족)는 반증이 아니다 - 그 경우
-check를 fail로 떨어뜨리지 않고 손대지 않은 채로 둔다(run_probe -> None).
+check를 fail로 떨어뜨리지 않고 손대지 않은 채로 둔다.
+
+**평가하지 못한 것도 사실이라 기록한다.** 실측이 안 나오면 `ProbeResult.observed`가
+None이고 `reason`에 왜 못 냈는지가 담긴다 - skill이 자꾸 없는 컬럼을 가리키는지,
+표본이 모자란 건지, 식을 잘못 쓰는지는 프롬프트를 고칠 때 필요한 정보고, 그냥
+None을 내면 그게 통째로 사라진다.
 """
 
 from __future__ import annotations
 
 import ast
 import operator
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -49,6 +55,22 @@ WARNING_RATIO = 0.7
 
 class ProbeExpressionError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """실측값, 또는 왜 재지 못했는지.
+
+    둘 중 하나만 채워진다. `observed`가 None이라고 해서 주장이 틀린 게 아니다 -
+    재보지 못했다는 뜻이고, 그건 반증이 아니다.
+    """
+
+    observed: Optional[Dict[str, Any]] = None
+    reason: Optional[str] = None
+
+    @property
+    def evaluated(self) -> bool:
+        return self.observed is not None
 
 
 def _eval_probe_node(node: ast.AST, variables: Dict[str, pd.Series]) -> Any:
@@ -85,16 +107,17 @@ def eval_probe_expression(expression: str, variables: Dict[str, pd.Series]) -> A
     return _eval_probe_node(tree, variables)
 
 
-def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """probe 하나를 실제 데이터에 대고 평가한다. 평가할 수 없으면 None."""
+def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> ProbeResult:
+    """probe 하나를 실제 데이터에 대고 평가한다. 못 하면 이유를 담아 돌려준다."""
     expression = probe.get("expression")
     columns = probe.get("columns")
     if not isinstance(expression, str) or not isinstance(columns, dict) or not columns:
-        return None
+        return ProbeResult(reason="probe 형식이 잘못됨(expression/columns 누락)")
     if not all(isinstance(k, str) and isinstance(v, str) for k, v in columns.items()):
-        return None
-    if not all(col in df.columns for col in columns.values()):
-        return None
+        return ProbeResult(reason="probe.columns의 별칭/컬럼명이 문자열이 아님")
+    missing = [col for col in columns.values() if col not in df.columns]
+    if missing:
+        return ProbeResult(reason=f"테이블에 없는 컬럼: {missing}")
 
     variables: Dict[str, pd.Series] = {}
     valid = pd.Series(True, index=df.index)
@@ -102,16 +125,17 @@ def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> Optional[Dict[str, Any
         s = pd.to_numeric(df[col], errors="coerce")
         variables[alias] = s
         valid &= s.notna()
-    if valid.sum() < 3:
-        return None
+    usable = int(valid.sum())
+    if usable < 3:
+        return ProbeResult(reason=f"숫자로 읽히는 행이 {usable}개뿐(3개 미만)")
     variables = {k: v[valid] for k, v in variables.items()}
 
     try:
         result = eval_probe_expression(expression, variables)
-    except (ProbeExpressionError, SyntaxError, TypeError, ZeroDivisionError):
-        return None
+    except (ProbeExpressionError, SyntaxError, TypeError, ZeroDivisionError) as e:
+        return ProbeResult(reason=f"식 평가 실패: {type(e).__name__}: {e}")
     if not isinstance(result, pd.Series) or len(result) == 0:
-        return None
+        return ProbeResult(reason="식이 행 단위 결과를 내지 않음")
 
     observed: Dict[str, Any] = {"expression": expression, "columns": columns, "n": int(len(result))}
 
@@ -120,7 +144,7 @@ def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> Optional[Dict[str, Any
     else:
         result = result.replace([np.inf, -np.inf], np.nan).dropna()
         if len(result) == 0:
-            return None
+            return ProbeResult(reason="계산 결과가 전부 결측/무한대")
         observed["median"] = float(result.median())
         observed["min"] = float(result.min())
         observed["max"] = float(result.max())
@@ -131,7 +155,7 @@ def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> Optional[Dict[str, Any
             observed["tolerance"] = float(tolerance)
             observed["within_tolerance_ratio"] = float(((result - target).abs() <= tolerance).mean())
 
-    return observed
+    return ProbeResult(observed=observed)
 
 
 def apply_probes(
@@ -145,6 +169,9 @@ def apply_probes(
     실측값 자체는 check에 붙이지 않고 `probe_log`에만 쌓는다. 룰베이스로 계산한
     값이 LLM 출력 사이사이에 섞여 있으면 "무엇이 측정값이고 무엇이 주장인지"가
     흐려져서, 측정값은 한곳에 모으고 check에는 참조(`probe_id`)만 남긴다.
+
+    재보지 못한 probe도 이유(`not_evaluable`)와 함께 `probe_log`에 남는다. 다만
+    그때는 check의 status를 건드리지 않는다 - 평가 불가는 반증이 아니다.
     """
     checks = validation.get("checks")
     if not isinstance(checks, list):
@@ -154,20 +181,26 @@ def apply_probes(
         probe = check.get("probe") if isinstance(check, dict) else None
         if not isinstance(probe, dict):
             continue
-        observed = run_probe(df, probe)
-        if observed is None:
-            continue
+        result = run_probe(df, probe)
 
         probe_id = f"probe-{len(probe_log) + 1}"
         probe_log.append(
             {
                 "probe_id": probe_id,
                 **(context or {}),
+                "check_id": check.get("check_id"),
                 "hypothesis": check.get("hypothesis"),
-                "observed": observed,
+                "requested": probe,
+                "observed": result.observed,
+                "not_evaluable": result.reason,
             }
         )
         check["probe_id"] = probe_id
+        if not result.evaluated:
+            # 재보지 못한 것은 반증이 아니다 - status를 건드리지 않는다.
+            continue
+
+        observed = result.observed or {}
         check["probe_verified"] = True
         ratio = observed.get("within_tolerance_ratio", observed.get("true_ratio"))
         if ratio is not None:

@@ -381,6 +381,47 @@ def test_measurements_live_only_in_the_rulebase_document(run_result):
     assert validation["value"]["checks"][0]["check_id"] == refuted["check_id"]
 
 
+def test_a_probe_that_could_not_run_says_why_in_the_rulebase(equipment_df):
+    """재보지 못한 것도 사실이라 남긴다 - 다만 주장을 반증하지는 않는다."""
+
+    class AsksTheImpossible(FakeLLM):
+        def _on_semantic_validation(self, label, payload):
+            return {
+                "overall_status": "pass",
+                "checks": [
+                    {
+                        "hypothesis": "없는 컬럼과의 관계",
+                        "columns": ["power_value"],
+                        "status": "pass",
+                        "probe": {
+                            "expression": "v <= ghost",
+                            "columns": {"v": "power_value", "ghost": "없는컬럼"},
+                        },
+                    }
+                ],
+                "revision_requests": [],
+                "validated_columns": {},
+            }
+
+    docs = run_pipeline(
+        equipment_df,
+        make_runner(AsksTheImpossible(refute_first_validation=False)),
+        config=PipelineConfig(max_rounds=1, max_workers=4),
+    )
+
+    probe = docs["rulebase"]["probes"][0]
+    assert probe["observed"] is None
+    assert "없는컬럼" in probe["not_evaluable"]
+    assert probe["requested"]["expression"] == "v <= ghost"
+
+    # 평가 불가는 반증이 아니다 - LLM이 쓴 판정이 그대로 남는다.
+    check = docs["table"]["validation"]["rounds"][0]["checks"][0]
+    assert check["status"] == "pass"
+    assert "probe_verified" not in check
+    assert check["probe_id"] == probe["probe_id"]
+    assert docs["table"]["validation"]["final_status"] == "pass"
+
+
 def test_failed_checks_carry_measurements_back_into_the_retry(run_result):
     """반증의 근거가 곧 재시도 힌트다 - 저장은 갈라놓되 피드백에는 실측값을 붙인다."""
     llm, _ = run_result

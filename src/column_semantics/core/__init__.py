@@ -10,6 +10,7 @@ from column_semantics.core.llm_log import LLMLog
 from column_semantics.core.naming import split_tokens
 from column_semantics.core.probes import (
     ProbeExpressionError,
+    ProbeResult,
     apply_probes,
     eval_probe_expression,
     run_probe,
@@ -26,6 +27,7 @@ __all__ = [
     "ColumnHistory",
     "LLMLog",
     "ProbeExpressionError",
+    "ProbeResult",
     "apply_probes",
     "build_relation_groups",
     "build_table_evidence",

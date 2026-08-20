@@ -71,7 +71,15 @@ def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         "checks": len(checks),
         "probe_verified_checks": sum(1 for c in checks if c.get("probe_verified")),
         "failed_checks": sum(1 for c in checks if c.get("status") in {"warning", "fail"}),
+        # 재본 것과 재보지 못한 것을 갈라 센다. 후자가 많으면 skill이 검사할 수
+        # 없는 것을 자꾸 요청하고 있다는 뜻이고, 그건 프롬프트에서 고칠 문제다.
         "probes_run": len(documents["rulebase"]["probes"]),
+        "probes_measured": sum(
+            1 for p in documents["rulebase"]["probes"] if p.get("observed") is not None
+        ),
+        "probes_not_evaluable": sum(
+            1 for p in documents["rulebase"]["probes"] if p.get("observed") is None
+        ),
         # 검토가 제 역할을 하는지 보는 축. flag_ratio가 1에 가까우면 검토가 아무것도
         # 거르지 않는 것이고, 0이면 planner가 아예 돌지 않는다 - 둘 다 프롬프트 문제다.
         #

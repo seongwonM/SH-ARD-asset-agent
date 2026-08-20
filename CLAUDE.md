@@ -44,7 +44,11 @@ python run.py ./data.csv   # CSV 하나 해석
 
 probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **probe 실행 실패를
 `fail`로 처리하지 말 것** — 평가할 수 없다는 것은 반증이 아니다(`run_probe`가
-`None`을 내면 check를 건드리지 않는다).
+실측을 못 내면 check의 status를 건드리지 않는다).
+
+**단, 평가하지 못했다는 사실은 남긴다.** `ProbeResult.reason`이 왜 못 쟀는지를
+담고, 그대로 `rulebase.probes`에 `not_evaluable`로 들어간다 — skill이 자꾸 없는
+컬럼을 가리키는지 표본이 모자란 건지는 프롬프트를 고칠 때 필요한 정보다.
 
 ## 고정 단계와 보완 skill
 

@@ -5,7 +5,7 @@
 문서를 가르는 기준은 크기가 아니라 **출처**다.
 
     columns    컬럼 하나가 단계를 지나며 어떻게 바뀌었는지 (검토 판정 포함)
-    rulebase   룰베이스로 계산한 값 전부 - 프로파일, 관계 증거, probe 실측값
+    rulebase   룰베이스로 계산한 값 전부 - 프로파일, 관계 증거, probe 실측/불가 사유
     plan       무엇을 어떤 순서로 돌렸고, 계획이 어떻게 바뀌었는지
     table      테이블 단위 산출물 - 테이블 설명, 관계 분석, 묶어 본 결과, 검증
     llm_calls  모든 LLM 호출의 입력과 출력 원문
@@ -82,7 +82,12 @@ def _columns_doc(
 
 
 def _rulebase_doc(evidence: Dict[str, Any], probe_log: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """데이터에서 직접 계산한 값만. LLM이 쓴 문장은 여기 들어오지 않는다."""
+    """데이터에서 직접 계산한 값만. LLM이 쓴 문장은 여기 들어오지 않는다.
+
+    `probes`에는 재본 것과 재보지 못한 것이 같이 들어간다. 후자는 `observed`가
+    null이고 `not_evaluable`에 이유가 있다 - 없는 컬럼을 가리켰는지, 표본이
+    모자랐는지, 식이 틀렸는지는 프롬프트를 고칠 때 쓰는 정보다.
+    """
     return {
         "table": evidence.get("table", {}),
         "column_profiles": evidence.get("column_profiles", {}),

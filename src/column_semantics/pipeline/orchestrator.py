@@ -335,13 +335,11 @@ def _run_group_probe(
 
     검사 가능한 주장은 데이터에 대고 본다는 규칙이 보완 단계라고 달라지지 않는다.
     실측값은 다른 probe와 같은 자리(rulebase 문서)로 가고, 컬럼 이력과 그룹
-    기록은 probe_id로만 가리킨다.
+    기록은 probe_id로만 가리킨다. 재보지 못했으면 그 이유를 같은 자리에 남긴다.
     """
     if not isinstance(probe, dict):
         return None
-    observed = run_probe(df, probe)
-    if observed is None:
-        return None
+    result = run_probe(df, probe)
     probe_id = f"probe-{len(probe_log) + 1}"
     probe_log.append(
         {
@@ -349,7 +347,9 @@ def _run_group_probe(
             **(stage_info or {}),
             "source": "joint_interpretation",
             "columns": action["columns"],
-            "observed": observed,
+            "requested": probe,
+            "observed": result.observed,
+            "not_evaluable": result.reason,
         }
     )
     return probe_id
