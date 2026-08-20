@@ -55,11 +55,26 @@ Single-column example — do not skip the probe just because there's only one co
 - Use `target`/`tolerance` when `expression` computes a number that should be close to a constant.
 - Omit `target` when `expression` is itself a comparison (e.g. `"a <= b"`, `"a >= 0"`) — the executor reports what
   fraction of rows satisfy it.
+
 The executor evaluates this against the actual rows and sets that check's `status` from what it measured; your
 own `status` is only a best-effort placeholder and may be replaced. The measurement itself is stored separately and
 comes back to you as `measured` if this check is revisited, so leave your `observed` as your own reading of the
 aggregate evidence — it is never overwritten. This is a general calculator, not a fixed menu — express whatever
 relationship you actually suspect.
+
+**What the executor can actually run.** Every column named in `probe.columns` is read as a number. Rows where any
+of them does not parse as one are dropped, and the probe is abandoned if fewer than 3 rows survive. So:
+
+- Timestamps, codes, identifiers and free text cannot be probed this way. "run_at increases", "status_cd is one of
+  three values", "the id starts with EQ-" are not expressible here however testable they sound. Probe the numeric
+  column that carries the claim, or none.
+- Two sparse columns can wipe each other out: rows missing in either one are gone before the expression runs.
+- Only the aliases you declared, arithmetic (`+ - * / % **`), comparison (`< <= > >= == !=`) and
+  `abs`/`min`/`max`/`round`. Nothing else — no other names, no attributes, no calls.
+
+If the claim does not fit inside those limits, leave `probe` out of that check and say what you actually observed
+instead. **An unrunnable probe is worse than no probe**: it reads as though the claim was verified when nothing was
+measured, and the check keeps your own unverified `status` anyway.
 
 For percent/ratio-scale claims specifically: use the exact scale `column_interpretation.selected_meaning`'s `unit`
 already stated (e.g. `percent_0_100` vs `fraction_0_1`) as your probe's bound — do not re-guess the scale

@@ -27,6 +27,13 @@ single-column pass cannot do.
    row (one column never exceeds another, two columns sum to a third, a ratio is constant), state it as a `probe`
    so the executor can test it against the real rows.
 
+   The executor reads every column in `probe.columns` as a number: rows where one of them is not numeric are
+   dropped, and the probe is abandoned below 3 surviving rows. Timestamps, codes and text cannot be probed this
+   way, and two sparse columns can leave nothing behind. Only your declared aliases, arithmetic, comparison and
+   `abs`/`min`/`max`/`round` are allowed. A relationship that does not fit those limits belongs in
+   `relationship` as prose with `probe` set to null — a probe that cannot run looks like verification while
+   measuring nothing.
+
 # Do not
 - Do not restate a single column's own profile as if it were relational evidence.
 - Do not claim a relationship that the pairwise evidence contradicts.

@@ -23,6 +23,10 @@ satisfy an exact constraint (sum/difference/ratio/product equal to a constant, e
 complementary"), do NOT assert it as fact. State it as a `relations` entry with `relation` describing the suspected
 constraint and moderate confidence, so `semantic_validation` can issue a data probe to confirm or refute it.
 
+Only numerically-valued columns can be confirmed that way - the probe executor reads every referenced column as a
+number. A suspected pattern over timestamps, codes or text has no probe behind it, so describe it as an ordinary
+interpretation rather than dressing it up as an arithmetic constraint that nothing will ever check.
+
 # Revision feedback
 If the input contains `revision_feedback.checks`, those columns' current interpretation was already tested against
 data and failed (see each check's `hypothesis`, `expected_constraint`, and `measured` — the executor's actual
