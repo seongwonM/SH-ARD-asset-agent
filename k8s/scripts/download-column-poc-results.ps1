@@ -12,7 +12,8 @@
   한 번 찍어 <실행타임스탬프>_<모델명>/ 폴더를 만들고, 그 실행이 처리한 CSV들이
   전부 그 아래 <csv_stem>/ 하위폴더로 들어간다(CSV마다 타임스탬프가 따로 찍히지
   않는다). LLM_MODEL에 모델을 여러 개 적었으면 타임스탬프는 같고 모델명만 다른
-  폴더가 모델 수만큼 생긴다 - 같은 실험의 모델별 결과다. 각 <csv_stem>/ 안에는 결과 문서
+  폴더가 모델 수만큼 생긴다 - 같은 실험의 모델별 결과다. 각 <csv_stem>/ 안에는
+  결과 문서 5개와 그 실행의 run.log가 같이 있다. 각 <csv_stem>/ 안에는 결과 문서
   5개(result.semantic.columns.json / .rulebase.json / .plan.json / .table.json /
   .llm_calls.json)와 run.log(성공/실패 모두 항상 남음)가 같이 들어있다. 중간에
   죽은 CSV도 파일은 그대로 있고, 완주 여부는 파일 유무가 아니라 meta.status가

@@ -5,7 +5,7 @@ help:
 	@echo "test         전체 테스트 (vLLM 불필요, 가짜 LLM으로 전 구간 실행)"
 	@echo "lint         포맷/린트"
 	@echo "check        LLM 엔드포인트 점검 (연결 + JSON 응답)"
-	@echo "run          CSV 한 개 해석 (CSV=path [OUT=path])"
+	@echo "run          CSV 한 개 해석 (CSV=path [OUT=path]). LLM_MODEL에 쉼표로 여러 모델 가능"
 	@echo "batch        폴더 안 CSV 전부 해석 (DATA=dir [OUT=dir])"
 	@echo "robustness   같은 CSV 반복 실행해 흔들림 측정 (DATA=dir OUT=file [REPS=n])"
 	@echo "exp-new      새 실험 worktree 생성 (NAME=001-short-name)"
@@ -28,7 +28,7 @@ check:
 
 run:
 	@test -n "$(CSV)" || (echo "사용법: make run CSV=./data.csv [OUT=result.json]" && exit 2)
-	python run.py "$(CSV)" $(if $(OUT),--output "$(OUT)",)
+	PYTHONPATH=src python -m column_semantics "$(CSV)" $(if $(OUT),--output "$(OUT)",)
 
 batch:
 	@test -n "$(DATA)" || (echo "사용법: make batch DATA=./data [OUT=./results]" && exit 2)

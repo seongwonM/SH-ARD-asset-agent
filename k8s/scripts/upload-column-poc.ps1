@@ -1,14 +1,14 @@
 ﻿<#
 .SYNOPSIS
-  로컬 코드(run.py / src / prompts / skills)를 PVC(/data/column_semantic_poc)로 업로드한다.
+  로컬 코드(src / prompts / skills)를 PVC(/data/column_semantic_poc)로 업로드한다.
 
 .DESCRIPTION
   평소에는 이 스크립트가 필요 없다. k8s/column-poc-job.yaml은 기본적으로
   이미지 안의 /app 코드를 쓰고, 이미지는 push할 때마다 CI가 자동으로 굽는다.
 
   이 스크립트는 **이미지를 다시 굽지 않고** 코드를 바꿔 돌려보고 싶을 때만 쓴다
-  (폐쇄망에서 빌드 파이프라인을 기다리기 어려운 경우). Job은 PVC에 run.py가
-  있으면 이미지 대신 그쪽을 쓰므로, 실험이 끝나면 반드시 정리해야 한다:
+  (폐쇄망에서 빌드 파이프라인을 기다리기 어려운 경우). Job은 USE_PVC_CODE=1일 때만
+  이 코드를 쓴다(기본은 이미지). 실험이 끝나면 정리할 것:
 
       kubectl exec sh-ard-asset-agent -- rm -rf /data/column_semantic_poc
 
@@ -49,9 +49,9 @@ $envVars = Read-DotEnv ".env"
 $Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
 $nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
 
-# run.py(진입점) / src(구현) / prompts(고정 단계) / skills(보완)가 한 세트다. 넷 중 하나만
-# 낡아도 원인을 알기 어려운 실패가 나므로 항상 넷을 같이 올린다.
-$required = @("run.py", "src", "prompts", "skills")
+# src(구현) / prompts(고정 단계) / skills(보완)가 한 세트다. 셋 중 하나만 낡아도
+# 원인을 알기 어려운 실패가 나므로 항상 셋을 같이 올린다.
+$required = @("src", "prompts", "skills")
 foreach ($item in $required) {
     if (-not (Test-Path (Join-Path $LocalDir $item))) {
         throw "$LocalDir/$item 가 없습니다. 레포 루트에서 실행했는지 확인하세요(-LocalDir로 지정 가능)."
@@ -93,6 +93,6 @@ foreach ($item in $required) {
         throw "$remoteDir/$item 확인 실패 - 업로드가 제대로 되지 않았습니다."
     }
 }
-Write-Host "run.py / src / prompts / skills 확인됨. kubectl apply -f k8s/column-poc-job.yaml 로 배치를 실행하면"
+Write-Host "src / prompts / skills 확인됨. Job에서 USE_PVC_CODE=1로 두고 실행하면"
 Write-Host "이미지 코드 대신 이 PVC 코드가 쓰인다. 실험이 끝나면 다음으로 되돌릴 것:"
 Write-Host "  kubectl exec $PodName -- rm -rf $remoteDir"

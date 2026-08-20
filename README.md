@@ -7,7 +7,7 @@ make install
 make test                      # vLLM 없이 전 구간 (가짜 LLM, 41 tests)
 cp .env.example .env           # LLM_API_ENDPOINT / LLM_MODEL 채우기
 make check                     # 엔드포인트 점검
-python run.py ./data.csv --output result.json
+python -m column_semantics ./data.csv --output result.json
 ```
 
 ## 무엇이 다른가
@@ -28,8 +28,7 @@ probe는 반증 도구다. 통과가 참을 증명하지 않고, 실패가 거�
 ## 구조
 
 ```
-run.py                     진입점(shim). k8s Job이 이 경로를 잡고 있다
-src/column_semantics/
+src/column_semantics/      진입점은 `python -m column_semantics`
   core/                    DataFrame -> 사실. 순수 계산, LLM/파일/환경변수를 모른다
     profiling.py             컬럼별 프로파일
     relations.py             컬럼 쌍 관계 / 복합키 후보 / 관계 그룹
@@ -49,7 +48,8 @@ src/column_semantics/
     orchestrator.py          실행 루프
     documents.py             결과를 5개 문서로 나눠 담기
   app.py                   composition root (CLI도 실험도 여기를 부른다)
-  cli.py
+  cli.py                   인자 파싱 + 모델별 반복 + 결과 폴더/로그 배치
+  __main__.py              `python -m column_semantics`
 prompts/*.md               고정 단계 프롬프트. 코드가 순서대로 돌린다
 skills/*.md                보완 skill. 검토가 넘긴 컬럼에만 붙는다
 experiments/               실험 전용. 제품 경로가 아니다
@@ -134,8 +134,9 @@ make batch DATA=./data OUT=./results
 # k8s: 이미지 안 코드로 바로 돈다 (CI가 커밋 SHA로 이미지 태그를 갱신)
 ./k8s/scripts/create-secret-from-env.ps1        # .env의 LLM_* -> k8s secret
 kubectl apply -f k8s/data-pvc.yaml
+kubectl delete job column-poc-batch --ignore-not-found   # Job spec은 불변이다
 kubectl apply -f k8s/column-poc-job.yaml
-kubectl logs -f job/column-poc-batch
+kubectl logs -f job/column-poc-batch                     # 첫 줄 [SRC]에 빌드 SHA
 ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
 ```
 

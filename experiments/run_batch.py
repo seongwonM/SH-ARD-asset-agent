@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """디렉터리 안의 CSV를 전부 해석한다. 실험/재현용이지 제품 경로가 아니다.
 
-k8s의 column-poc-batch Job은 같은 일을 셸 루프로 한다(Job은 CSV 하나가 실패해도
-컨테이너가 죽지 않도록 bash에서 감싸는 편이 단순해서다). 이 스크립트는 로컬에서
-같은 배치를 돌려보기 위한 것이고, 출력 폴더 구조를 Job과 똑같이 맞춘다:
+k8s의 column-poc-batch Job과 **같은 일을 같은 방식으로** 한다 - CSV를 순회하며
+CLI를 한 번씩 부르고, 하나가 실패해도 나머지를 계속 돈다. 모델별 반복과 결과
+폴더 규칙은 CLI가 갖고 있으므로 여기서 다시 구현하지 않는다. 규칙이 두 곳에
+있으면 로컬과 배치 결과가 조용히 달라진다.
 
-    <out>/<실행타임스탬프>/<csv_stem>/result.semantic.json
+    <out>/<실행타임스탬프>_<모델명>/<csv_stem>/result.semantic.*.json + run.log
 
-실행 한 번 = 실험 하나 = 타임스탬프 폴더 하나. CSV마다 타임스탬프를 새로 찍지
-않는다(그러면 같은 배치로 돌린 결과가 흩어져 어느 실행에 속하는지 알 수 없다).
+실행 한 번 = 실험 하나 = 타임스탬프 하나. 모델이 여럿이면 타임스탬프를 공유하고
+폴더만 갈린다(LLM_MODEL에 쉼표로 나열).
 
     python experiments/run_batch.py --data-dir ./data --out ./results
 """
@@ -16,22 +17,15 @@ k8s의 column-poc-batch Job은 같은 일을 셸 루프로 한다(Job은 CSV 하
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-import traceback
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from column_semantics.adapters.env import load_dotenv  # noqa: E402
-from column_semantics.adapters.llm import models_from_env  # noqa: E402
-from column_semantics.app import (  # noqa: E402
-    DEFAULT_PROMPT_DIR,
-    DEFAULT_SKILL_DIR,
-    analyze_csv,
-    safe_name,
-)
+from column_semantics.app import DEFAULT_PROMPT_DIR, DEFAULT_SKILL_DIR  # noqa: E402
+from column_semantics.cli import main as run_one  # noqa: E402
 from column_semantics.core.clock import KST  # noqa: E402
 
 
@@ -51,44 +45,25 @@ def main() -> int:
         print(f"[ERROR] {args.data_dir}에 CSV가 없습니다.", file=sys.stderr)
         return 1
 
-    # 모델은 LLM_MODEL에 쉼표로 여러 개 적을 수 있다. 실행 하나는 항상 모델
-    # 하나이고, 모델마다 결과 폴더를 따로 만든다 - 한 폴더에 섞이면 어느 모델이
-    # 낸 결과인지 파일만 보고는 알 수 없다.
-    models = models_from_env()
-    if not models:
-        print("[ERROR] LLM_MODEL이 비어 있습니다(.env 확인).", file=sys.stderr)
-        return 1
-
-    # 타임스탬프는 배치 전체에 하나. 모델이 여럿이어도 같은 실험이다.
-    run_ts = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
-    print(f"[BATCH] 모델 {len(models)}개: {', '.join(models)}")
-    print(f"[BATCH] CSV {len(csvs)}개: {', '.join(c.name for c in csvs)}")
-    print(f"[BATCH] 출력 루트: {args.out} / 실행 타임스탬프: {run_ts}")
+    run_root = args.out / datetime.now(KST).strftime("%Y%m%d_%H%M%S")
+    print(f"[BATCH] CSV {len(csvs)}개 -> {run_root}_<모델명>/<csv이름>/")
 
     failed = []
-    for model in models:
-        os.environ["LLM_MODEL"] = model
-        run_dir = args.out / f"{run_ts}_{safe_name(model)}"
-        print(f"\n[MODEL] {model} -> {run_dir}")
+    for csv in csvs:
+        print(f"\n[RUN] {csv.name}")
+        code = run_one(
+            [
+                str(csv),
+                "--prompts", str(args.prompts),
+                "--skills", str(args.skills),
+                "--output-root", str(run_root),
+                "--max-rounds", str(args.max_rounds),
+            ]
+        )
+        if code != 0:
+            failed.append(csv.stem)
 
-        for csv in csvs:
-            exp_dir = run_dir / csv.stem
-            out = exp_dir / "result.semantic.json"
-            print(f"\n[RUN] {csv.name} -> {exp_dir}")
-            try:
-                analyze_csv(
-                    csv_path=csv,
-                    prompt_dir=args.prompts,
-                    skill_dir=args.skills,
-                    max_rounds=args.max_rounds,
-                    output=out,
-                )
-            except Exception:  # noqa: BLE001 - CSV 하나가 실패해도 나머지는 계속 돈다
-                traceback.print_exc()
-                failed.append(f"{model}/{csv.stem}")
-
-    total = len(csvs) * len(models)
-    print(f"\n==== 완료: {total}건 중 {total - len(failed)}건 성공 ====")
+    print(f"\n==== 완료: CSV {len(csvs)}개 중 {len(csvs) - len(failed)}개 성공 ====")
     if failed:
         print("[FAILED LIST] " + " ".join(failed))
         return 1

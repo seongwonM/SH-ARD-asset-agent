@@ -4,7 +4,7 @@
 #
 #   kubectl apply -f k8s/data-pvc.yaml && kubectl apply -f k8s/pod.yaml
 #   kubectl exec -it sh-ard-asset-agent -- /bin/bash
-#     $ python run.py /data/robustness_test/x.csv --output /data/out.json
+#     $ python -m column_semantics /data/robustness_test/x.csv --output /data/out.json
 #     $ python experiments/check_endpoint.py    # LLM 연결/JSON 응답 점검
 #
 # 이미지 태그는 .github/workflows/build-push.yml이 커밋 SHA로 자동 갱신한다.

@@ -3,9 +3,10 @@
 CSV 테이블의 컬럼 의미를 해석하고, 그 해석을 데이터로 반증하는 파이프라인.
 
 ```bash
-make test                  # 전체 테스트 (vLLM 불필요, 가짜 LLM으로 전 구간)
-make check                 # 실제 엔드포인트 점검
-python run.py ./data.csv   # CSV 하나 해석
+make test                              # 전체 테스트 (vLLM 불필요, 가짜 LLM으로 전 구간)
+make check                             # 실제 엔드포인트 점검
+make run CSV=./data.csv                # CSV 하나 해석
+python -m column_semantics ./data.csv  # 같은 것 (PYTHONPATH=src)
 ```
 
 전체 구조와 실행 흐름은 `README.md`에 있다. 여기는 **작업할 때 지킬 것**만 적는다.
@@ -146,13 +147,14 @@ gap_planner에게 맡긴 지점이다.
 인자나 출력 파일 구조를 바꾸면 이 Job의 셸 스크립트, `k8s/scripts/*.ps1`,
 `deploy/Dockerfile`의 COPY 목록이 같이 어긋난다. 셋 다 확인할 것.
 
-`LLM_MODEL`은 쉼표로 여러 모델을 받는다. 실행 하나는 항상 모델 하나이고
-(`make_llm_from_env`는 첫 번째만 쓴다), 모델을 도는 것은 배치의 일이다 - 결과
-폴더가 `<타임스탬프>_<모델명>`으로 갈리는 이유다. 한 폴더에 두 모델 결과가
-섞이면 어느 쪽이 낸 건지 파일만 보고는 알 수 없다.
+`LLM_MODEL`은 쉼표로 여러 모델을 받고, **모델을 도는 것도 결과 폴더 규칙도
+CLI(`cli.py`)가 한다.** Job의 셸은 CSV를 순회하며 CLI를 부르는 일만 한다 -
+셸에 로직이 쌓이면 테스트할 수가 없다. 실행 하나는 항상 모델 하나이고 결과는
+`<타임스탬프>_<모델명>/<csv이름>/`에 결과 5개와 `run.log`로 떨어진다. 한 폴더에
+두 모델 결과가 섞이면 어느 쪽이 낸 건지 파일만 보고는 알 수 없다.
 
 눈으로 검토하지 말고 **스크립트를 뽑아서 돌려볼 것.** yaml에서 `- |` 블록을
-꺼내 `/data` 경로만 임시 폴더로 바꾸고, `run.py` 자리에 결과 파일만 쓰는 스텁을
+꺼내 `/data` 경로만 임시 폴더로 바꾸고, `python -m column_semantics` 자리에 결과 파일만 쓰는 스텁을
 두면 실제 셸 로직(루프·tee·실패 경로·종료코드)이 그대로 검증된다. macOS에서는
 `date -u -d`가 없으니 shim이 필요하다 - 컨테이너(GNU coreutils)에서는 동작한다.
 
@@ -204,5 +206,5 @@ gap 보충과 수정 라운드는 `column_interpretation.columns[col]`을 제자
 ## 실험
 
 실험 전용 코드는 `experiments/`에만 둔다(`run_batch.py`, `run_robustness.py`,
-`check_endpoint.py`). 제품 경로(`src/`, `run.py`)가 실험 코드를 import하면 안 된다.
+`check_endpoint.py`). 제품 경로(`src/`)가 실험 코드를 import하면 안 된다.
 브랜치/worktree 운영 규칙은 `EXPERIMENTS.md`.
