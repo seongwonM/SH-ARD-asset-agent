@@ -105,22 +105,47 @@ class FakeLLM:
             "groups": [{"columns": ["power_value", "power_limit"], "kind": "measure_limit"}],
         }
 
+    def _on_column_review(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """power_value만 넘기고 나머지는 통과시킨다 - 대부분 pass가 정상이다."""
+        column = payload["target_column"]
+        if column == "power_value" and payload["interpretation"].get("status") == "ambiguous":
+            return {
+                "verdict": "needs_work",
+                "gap": "후보가 둘이고, power_limit과 강하게 같이 움직인다",
+                "cites": [{"field": "pairwise.pearson_corr", "value": 0.0}],
+            }
+        return {"verdict": "pass", "gap": "", "cites": []}
+
     def _on_gap_planner(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "gap_assignments": [
+            "actions": [
                 {
-                    "column": "power_value",
-                    "skill": "reconsider_ambiguous",
+                    "action": "reconsider_ambiguous",
+                    "columns": ["power_value"],
                     "reason": "후보가 둘이라 확정되지 않음",
+                    "cites": [],
                 },
-                # 아래 둘은 정제 단계에서 버려져야 한다.
-                {"column": "없는컬럼", "skill": "reconsider_ambiguous", "reason": "x"},
-                {"column": "run_id", "skill": "존재하지_않는_skill", "reason": "x"},
-            ]
+                # 아래는 전부 정제 단계에서 버려져야 한다.
+                {"action": "reconsider_ambiguous", "columns": ["없는컬럼"], "reason": "x"},
+                {"action": "존재하지_않는_skill", "columns": ["run_id"], "reason": "x"},
+                {"action": "explain_sparsity", "columns": ["run_id"], "reason": "검토가 안 넘긴 컬럼"},
+                {"action": "joint_interpretation", "columns": ["power_value"], "reason": "혼자 묶기"},
+            ],
+            "skipped": [],
         }
 
     def _on_reconsider_ambiguous(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "resolved", "selected_meaning": "설비 출력값(W)"}
+
+    def _on_joint_interpretation(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "relationship": "power_value는 power_limit에 대한 측정값이다",
+            "columns": {
+                c: {"status": "resolved", "selected_meaning": f"{c}(그룹 해석)"}
+                for c in payload["columns"]
+            },
+            "probe": None,
+        }
 
     def _on_semantic_validation(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         # 수정 라운드에서는 revision_feedback이 채워져 들어온다 - 그걸로 회차를 구분한다.

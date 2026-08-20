@@ -58,6 +58,10 @@ def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     rounds = documents["table"]["validation"].get("rounds") or []
     checks = rounds[-1]["checks"] if rounds else []
     interpretations = [c["final"]["interpretation"] or {} for c in columns.values()]
+    gap_rounds = documents["plan"]["gap_rounds"]
+    reviewed = sum(len(r["reviews"]) for r in gap_rounds)
+    flagged_names = sorted({c for r in gap_rounds for c in r["flagged"]})
+    flagged = sum(len(r["flagged"]) for r in gap_rounds)
     return {
         "validation_status": meta.get("validation_status"),
         "elapsed_seconds": meta.get("elapsed_seconds"),
@@ -68,6 +72,24 @@ def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         "probe_verified_checks": sum(1 for c in checks if c.get("probe_verified")),
         "failed_checks": sum(1 for c in checks if c.get("status") in {"warning", "fail"}),
         "probes_run": len(documents["rulebase"]["probes"]),
+        # 검토가 제 역할을 하는지 보는 축. flag_ratio가 1에 가까우면 검토가 아무것도
+        # 거르지 않는 것이고, 0이면 planner가 아예 돌지 않는다 - 둘 다 프롬프트 문제다.
+        #
+        # flagged_columns는 이름을 그대로 남긴다. 비율이 적당해도 회차마다 다른
+        # 컬럼이 걸리면 검토를 믿을 수 없는데, 그 흔들림은 이름 없이는 못 본다 -
+        # 같은 (dataset, model)의 여러 rep에서 컬럼별 등장 횟수를 세면 나온다.
+        # (한 회차 안에서 여러 라운드에 걸쳐 걸린 컬럼은 한 번만 센다)
+        "gap_rounds": len(gap_rounds),
+        "reviewed_columns": reviewed,
+        "flagged_count": flagged,
+        "flagged_columns": flagged_names,
+        "flag_ratio": round(flagged / reviewed, 3) if reviewed else None,
+        "gap_actions": sum(len(r["actions"]) for r in gap_rounds),
+        "joint_actions": sum(
+            1 for r in gap_rounds for a in r["actions"] if a["action"] == "joint_interpretation"
+        ),
+        # 실행 불가로 버려진 행동. 늘어나면 planner가 계약을 못 지키고 있다는 뜻이다.
+        "dropped_actions": sum(len(r["dropped"]) for r in gap_rounds),
         "table_context": documents["table"]["table_context"],
     }
 

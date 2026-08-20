@@ -23,9 +23,9 @@ from column_semantics.adapters.llm import LLMClient
 from column_semantics.adapters.prompts import PromptLibrary
 from column_semantics.pipeline.plan import (
     GAP_SKILLS,
-    STAGE_ORDER,
-    sanitize_gap_assignments,
+    REPLAN_STAGES,
     sanitize_plan,
+    sanitize_review,
 )
 
 
@@ -89,7 +89,7 @@ class StageRunner:
             "objective": (
                 "semantic_validation이 지적한 모순을 해소하도록, 필요한 단계만 다시 실행하는 계획을 세운다."
             ),
-            "available_stages": STAGE_ORDER,
+            "available_stages": REPLAN_STAGES,
             "table_summary": evidence["table"],
             "grain_candidates": evidence.get("grain_candidates", []),
             "has_pairwise_evidence": bool(evidence.get("relation_evidence", {}).get("pairwise")),
@@ -103,36 +103,37 @@ class StageRunner:
         # 나중에 대조하려면 고치기 전 사본이 있어야 한다.
         return {"raw": copy.deepcopy(raw), "plan": sanitize_plan(raw)}
 
-    def diagnose_gaps(self, evidence: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
-        """1차 해석 직후 호출. 컬럼별 상태(ambiguous 여부, null/zero 비율, 타입-의미
-        충돌)를 보고 어떤 컬럼에 GAP_SKILLS 중 무엇을 붙일지 LLM이 판단한다 -
-        규칙표가 아니라 판단이 필요한 지점이라 여기만 LLM에게 맡긴다."""
-        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
-        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
-        columns_summary = []
-        for col in evidence["table"]["columns"]:
-            profile = evidence["column_profiles"].get(col, {})
-            numeric = profile.get("numeric_profile") or {}
-            columns_summary.append(
-                {
-                    "name": col,
-                    "semantic_type": semantic_type.get(col),
-                    "interpretation": column_interp.get(col),
-                    "null_ratio": profile.get("null_ratio"),
-                    "zero_ratio": numeric.get("zero_ratio"),
-                }
-            )
+    def plan_gaps(
+        self,
+        flagged: List[str],
+        reviews: Dict[str, Any],
+        evidence: Dict[str, Any],
+        results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """검토가 넘긴 컬럼들을 한자리에 놓고 무엇을 할지 정한다.
 
-        payload = {"columns": columns_summary, "available_gap_skills": GAP_SKILLS}
-        result = self._call(
-            "gap_planner", self.stages, "planner", payload, label="gap_planner"
-        )
-        return {
-            "raw": copy.deepcopy(result),
-            "gap_assignments": sanitize_gap_assignments(
-                result.get("gap_assignments"), evidence["table"]["columns"]
-            ),
+        컬럼 하나만 보는 검토는 "이 둘을 같이 봐야 한다"를 알 수 없다. 그 판단이
+        가능한 유일한 지점이라 여기서만 여러 컬럼을 한 payload에 넣는다 - 대신
+        넘어온 컬럼과 그 짝만 넣지, 테이블 전체를 넣지 않는다.
+        """
+        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
+        flagged_columns = [
+            {
+                "name": col,
+                "column_profile": evidence["column_profiles"].get(col),
+                "interpretation": column_interp.get(col),
+                "gap": (reviews.get(col) or {}).get("gap", ""),
+            }
+            for col in flagged
+        ]
+        payload = {
+            "flagged_columns": flagged_columns,
+            "pairwise_evidence": _pairwise_touching(evidence, flagged),
+            "all_column_names": evidence["table"]["columns"],
+            "available_actions": GAP_SKILLS,
         }
+        raw = self._call("gap_planner", self.stages, "planner", payload, label="gap_planner")
+        return {"raw": copy.deepcopy(raw), "actions": raw.get("actions"), "skipped": raw.get("skipped")}
 
     # -- 컬럼/그룹 단위 고정 단계 ----------------------------------------
 
@@ -158,6 +159,33 @@ class StageRunner:
             label=f"column_interpretation:{column}",
             column=column,
         )
+
+    def review_column(
+        self,
+        column: str,
+        evidence: Dict[str, Any],
+        results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """이 컬럼을 더 볼지 말지만 정한다(무엇을 할지는 gap_planner가 정한다).
+
+        해석을 쓴 호출이 못 본 것을 준다: 그 컬럼이 낀 pairwise 증거다. 같은 정보로
+        같은 모델에게 다시 물으면 자기 문장을 다시 읽는 것에 그친다.
+        """
+        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
+        semantic_type = (results.get("semantic_type") or {}).get("columns", {})
+        payload = {
+            "table": evidence["table"],
+            "target_column": column,
+            "column_profile": evidence["column_profiles"][column],
+            "interpretation": column_interp.get(column),
+            "semantic_type": semantic_type.get(column),
+            "pairwise_evidence": _pairwise_touching(evidence, [column]),
+            "other_column_names": [c for c in evidence["table"]["columns"] if c != column],
+        }
+        raw = self._call_stage(
+            "column_review", payload, label=f"column_review:{column}", column=column
+        )
+        return {"raw": copy.deepcopy(raw), "review": sanitize_review(raw)}
 
     def validate_group(
         self,
@@ -275,15 +303,32 @@ class StageRunner:
     def run_gap_skill(
         self,
         skill_name: str,
-        column: str,
+        columns: List[str],
         evidence: Dict[str, Any],
         results: Dict[str, Any],
         reason: str = "",
     ) -> Dict[str, Any]:
-        """gap_planner가 이 컬럼에 필요하다고 판단했을 때만 불린다."""
+        """gap_planner가 배정했을 때만 불린다. 컬럼 하나짜리 보완과 여러 컬럼을
+        같이 보는 보완이 같은 자리를 쓴다 - 배정 단위가 컬럼 집합이라서다."""
         column_interp = (results.get("column_interpretation") or {}).get("columns", {})
         semantic_type = (results.get("semantic_type") or {}).get("columns", {})
 
+        if skill_name == "joint_interpretation":
+            payload = {
+                "columns": columns,
+                "column_profiles": {c: evidence["column_profiles"][c] for c in columns},
+                "interpretations": {c: column_interp.get(c) for c in columns},
+                "pairwise_evidence": _pairwise_within(evidence, columns),
+                "reason": reason,
+            }
+            return self._call_skill(
+                skill_name,
+                payload,
+                label=f"{skill_name}:{'+'.join(columns)}",
+                columns=list(columns),
+            )
+
+        column = columns[0]
         if skill_name == "reconsider_ambiguous":
             other_resolved = {
                 c: v.get("selected_meaning")
@@ -319,3 +364,23 @@ class StageRunner:
         return self._call_skill(
             skill_name, payload, label=f"{skill_name}:{column}", column=column
         )
+
+
+def _pairwise_touching(evidence: Dict[str, Any], columns: List[str]) -> List[Dict[str, Any]]:
+    """지정한 컬럼이 한쪽에라도 낀 pairwise 증거만."""
+    targets = set(columns)
+    return [
+        p
+        for p in evidence.get("relation_evidence", {}).get("pairwise", [])
+        if targets & set(p.get("columns", []))
+    ]
+
+
+def _pairwise_within(evidence: Dict[str, Any], columns: List[str]) -> List[Dict[str, Any]]:
+    """양쪽 모두 그 그룹 안에 있는 pairwise 증거만."""
+    targets = set(columns)
+    return [
+        p
+        for p in evidence.get("relation_evidence", {}).get("pairwise", [])
+        if set(p.get("columns", [])) <= targets
+    ]

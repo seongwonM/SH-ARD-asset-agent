@@ -92,10 +92,16 @@ def _rulebase_doc(evidence: Dict[str, Any], probe_log: List[Dict[str, Any]]) -> 
 
 
 def _plan_doc(planning: Dict[str, Any], timeline_events: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """계획의 전 과정. LLM 원출력(raw)과 코드가 정제한 결과를 나란히 둔다."""
+    """계획의 전 과정. LLM 원출력(raw)과 코드가 정제한 결과를 나란히 둔다.
+
+    gap_rounds에는 라운드별로 (컬럼별 검토 -> 넘어간 컬럼 -> planner 원출력 ->
+    실행된 행동 -> 버려진 행동)이 전부 남는다. 버린 것을 남기는 이유는, planner가
+    무엇을 하려 했는지가 사라지면 프롬프트를 고칠 근거도 사라지기 때문이다.
+    검토와 planner가 적은 근거(cites/reason)는 검증하지 않고 그대로 싣는다.
+    """
     return {
         "first_pass": planning.get("first_pass", {}),
-        "gap_planning": planning.get("gap_planning", {}),
+        "gap_rounds": planning.get("gap_rounds", []),
         "replans": planning.get("replans", []),
         "execution": timeline_events,
     }

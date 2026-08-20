@@ -50,7 +50,7 @@ def test_document_set_is_stable(run_result):
         "grain_candidates",
         "probes",
     }
-    assert set(docs["plan"]) == {"meta", "first_pass", "gap_planning", "replans", "execution"}
+    assert set(docs["plan"]) == {"meta", "first_pass", "gap_rounds", "replans", "execution"}
     assert set(docs["table"]) == {"meta", "table_context", "relation_analysis", "validation"}
     assert set(docs["llm_calls"]) == {"meta", "prompts", "calls"}
 
@@ -140,7 +140,7 @@ def test_column_stages_keep_what_each_step_changed(equipment_df):
     )
     stages = docs["columns"]["columns"]["power_value"]["stages"]
     kinds = [s["stage"] for s in stages]
-    assert kinds[:2] == ["semantic_type", "column_interpretation"]
+    assert kinds[:3] == ["semantic_type", "column_interpretation", "column_review"]
     assert "gap" in kinds
 
     # 1차 해석 단계는 gap이 덮어쓰기 전 값을 그대로 들고 있어야 한다.
@@ -151,12 +151,105 @@ def test_column_stages_keep_what_each_step_changed(equipment_df):
     gap = next(s for s in stages if s["stage"] == "gap")
     assert gap["skill"] == "reconsider_ambiguous"
     # 어느 라운드/국면의 변화인지가 모든 단계에 붙어야 시간순으로 읽을 수 있다.
-    assert all(s["round"] == 1 and s["phase"] == "exec" for s in stages)
+    assert all("round" in s and s["phase"] == "exec" for s in stages)
     assert gap["before"]["status"] == "ambiguous"
     assert gap["after"]["selected_meaning"] == "설비 출력값(W)"
     assert set(gap["changed"]) >= {"status", "selected_meaning"}
     # 손대지 않은 컬럼은 gap 단계 자체가 없다.
     assert "gap" not in [s["stage"] for s in docs["columns"]["columns"]["run_id"]["stages"]]
+
+
+def test_review_decides_which_columns_reach_the_planner(run_result):
+    """planner가 도는 조건은 임계값이 아니라 검토 결과다."""
+    llm, docs = run_result
+    round1 = docs["plan"]["gap_rounds"][0]
+
+    # 컬럼마다 한 번씩 검토가 돌고, 넘어간 것만 planner 대상이 된다.
+    reviews = round1["reviews"]
+    assert len(reviews) == 6
+    assert reviews["power_value"]["verdict"] == "needs_work"
+    assert reviews["run_id"]["verdict"] == "pass"
+    assert round1["flagged"] == ["power_value"]
+    # 검토가 적은 근거는 검증하지 않고 그대로 남는다.
+    assert reviews["power_value"]["gap"]
+    assert "gap_planner" in llm.labels()
+
+
+def test_planner_is_not_called_when_nothing_is_flagged(equipment_df):
+    """근거 없이 부르는 호출을 없앤다 - 넘어온 컬럼이 없으면 계획할 것도 없다."""
+
+    class AllPass(FakeLLM):
+        def _on_column_review(self, label, payload):
+            return {"verdict": "pass", "gap": "", "cites": []}
+
+    llm = AllPass(refute_first_validation=False)
+    docs = run_pipeline(
+        equipment_df, make_runner(llm), config=PipelineConfig(max_rounds=1, max_workers=4)
+    )
+    assert "gap_planner" not in llm.labels()
+    round1 = docs["plan"]["gap_rounds"][0]
+    assert round1["flagged"] == []
+    assert round1["planner"] is None
+    assert round1["actions"] == []
+
+
+def test_unexecutable_actions_are_dropped_with_a_reason(run_result):
+    """정제는 판단하지 않고 실행 가능성만 본다. 버린 것도 남긴다."""
+    _, docs = run_result
+    dropped = docs["plan"]["gap_rounds"][0]["dropped"]
+    whys = " ".join(d["why"] for d in dropped)
+    assert len(dropped) == 4
+    assert "없는 컬럼" in whys
+    assert "모르는 행동" in whys
+    assert "검토가 넘긴 컬럼이 대상에 없음" in whys
+    assert "여러 컬럼을 보는 행동인데 컬럼이 하나" in whys
+
+
+def test_joint_interpretation_updates_every_column_in_the_group(equipment_df):
+    """여러 컬럼을 묶는 판단은 컬럼 하나만 보는 검토가 할 수 없어서 planner 몫이다."""
+
+    class Grouping(FakeLLM):
+        def _on_column_review(self, label, payload):
+            column = payload["target_column"]
+            if column in {"power_value", "power_limit"}:
+                return {"verdict": "needs_work", "gap": "짝이 있어 보인다", "cites": []}
+            return {"verdict": "pass", "gap": "", "cites": []}
+
+        def _on_gap_planner(self, label, payload):
+            return {
+                "actions": [
+                    {
+                        "action": "joint_interpretation",
+                        "columns": ["power_value", "power_limit"],
+                        "reason": "측정값과 한계로 보인다",
+                    }
+                ],
+                "skipped": [],
+            }
+
+    llm = Grouping(refute_first_validation=False)
+    docs = run_pipeline(
+        equipment_df, make_runner(llm), config=PipelineConfig(max_rounds=1, max_workers=4)
+    )
+    assert "joint_interpretation:power_value+power_limit" in llm.labels()
+
+    for col in ("power_value", "power_limit"):
+        interpretation = docs["columns"]["columns"][col]["final"]["interpretation"]
+        assert interpretation["selected_meaning"] == f"{col}(그룹 해석)"
+        gap = next(s for s in docs["columns"]["columns"][col]["stages"] if s["stage"] == "gap")
+        assert gap["skill"] == "joint_interpretation"
+        # 어떤 컬럼과 같이 봐서 바뀐 것인지가 남아야 한다.
+        assert gap["with_columns"] == [c for c in ("power_value", "power_limit") if c != col]
+
+
+def test_second_gap_round_only_revisits_columns_that_changed(run_result):
+    """손대지 않은 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다."""
+    _, docs = run_result
+    rounds = docs["plan"]["gap_rounds"]
+    assert [r["round"] for r in rounds] == [1, 2]
+    assert set(rounds[1]["reviews"]) == {"power_value"}
+    # 2라운드 검토에서 통과하면 planner를 다시 부르지 않는다.
+    assert rounds[1]["planner"] is None
 
 
 def test_probe_refutes_llm_pass_and_triggers_revision(run_result):
@@ -238,10 +331,12 @@ def test_execution_trace_covers_every_skill(run_result):
     stages = {e["stage"] for e in execution if e.get("event") == "stage"}
     assert {"semantic_type", "column_interpretation", "semantic_validation", "table_context"} <= stages
     assert all("elapsed_seconds" in e for e in execution)
-    # 1차 고정 순서와 gap 배정 근거도 계획 문서 안에 있다.
+    # 1차 고정 순서와 gap 라운드도 계획 문서 안에 있다.
     assert docs["plan"]["first_pass"]["stages"][0] == "semantic_type"
-    assert docs["plan"]["gap_planning"]["assignments"][0]["column"] == "power_value"
-    assert len(docs["plan"]["gap_planning"]["raw"]["gap_assignments"]) == 3  # 정제 전 원본
+    first_round = docs["plan"]["gap_rounds"][0]
+    assert first_round["flagged"] == ["power_value"]
+    assert [a["action"] for a in first_round["actions"]] == ["reconsider_ambiguous"]
+    assert len(first_round["planner"]["raw"]["actions"]) == 5  # 정제 전 원본
 
 
 def test_checkpoint_is_written_as_each_skill_finishes(equipment_df):

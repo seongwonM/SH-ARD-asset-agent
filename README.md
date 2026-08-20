@@ -51,7 +51,7 @@ src/column_semantics/
   app.py                   composition root (CLI도 실험도 여기를 부른다)
   cli.py
 prompts/*.md               고정 단계 프롬프트. 코드가 순서대로 돌린다
-skills/*.md                보완 skill. 그 컬럼에 필요할 때만 붙는다
+skills/*.md                보완 skill. 검토가 넘긴 컬럼에만 붙는다
 experiments/               실험 전용. 제품 경로가 아니다
 k8s/                       배치 Job / 디버그 Pod / PVC
 ```
@@ -118,7 +118,8 @@ LLM 판단이 아니라 데이터 조건이다.
 파일을 어느 폴더에 두느냐가 곧 "언제 도는가"다.
 
 - **보완 skill** — `skills/<이름>.md` + `plan.py`의 `GAP_SKILLS`에 이름 추가.
-  gap_planner가 그 컬럼에 필요하다고 판단할 때만 붙는다.
+  gap_planner가 배정할 때만 붙는다. 여러 컬럼을 한 번에 보는 skill이면
+  `MULTI_COLUMN_SKILLS`에도 넣는다.
 - **고정 단계** — `prompts/<이름>.md` + `plan.py`의 `STAGE_ORDER`에 순서 지정.
   항상(또는 데이터 조건에 따라) 돈다. 정말 매번 필요한 산출물인지 먼저 따져볼 것.
 

@@ -52,8 +52,8 @@ probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **
 
 | | 폴더 | 실행 결정 | 예 |
 |---|---|---|---|
-| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | semantic_type, column_interpretation, semantic_validation, table_context |
-| 보완 skill | `skills/` | `gap_planner`가 컬럼별로 판단 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning |
+| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | semantic_type, column_interpretation, column_review, semantic_validation, table_context |
+| 보완 skill | `skills/` | `column_review` → `gap_planner`를 거쳐 배정 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning, joint_interpretation |
 
 **항상 나와야 하는 산출물을 skill로 만들지 말 것.** 컬럼 해석과 테이블 맥락은
 무조건 만들어야 하니 "돌릴지 말지"를 물을 여지가 없다 - 물어보는 순간 비용과
@@ -69,10 +69,31 @@ gap_planner에게 맡긴 지점이다.
 컬럼이 늘수록 무관한 정보가 판단을 흐리고 토큰만 커진다. 그룹 단위는
 그 그룹에 속한 컬럼의 증거만 본다.
 
+### 보완은 두 단계로 판단한다
+
+`column_review`(컬럼별 병렬)가 **"더 볼지 말지"만** 정하고, `gap_planner`(단독)가
+넘어온 컬럼들을 한자리에서 보고 **"무엇을 할지"**를 정한다. 이 순서를 합치지 말 것.
+
+- 검토에 skill 이름을 고르게 하면 안 된다. 컬럼 하나만 보고서는 "이 둘을 같이
+  봐야 한다"를 알 수 없다 — 그 판단이 가능한 곳은 넘어온 컬럼을 함께 보는
+  planner 뿐이고, `joint_interpretation`이 거기서만 나오는 이유다.
+- **planner가 도는 조건은 검토 결과다.** `needs_work`가 0이면 호출하지 않는다.
+  임계값으로 게이트를 만들지 말 것.
+
+### 정제는 실행 가능성만 본다
+
+`sanitize_gap_actions`가 거르는 것은 없는 컬럼, 모르는 행동, 중복, 예산뿐이다.
+**근거가 충분한지는 판정하지 않는다** — 그걸 코드가 하려면 semantic_type마다
+임계값을 정해야 하고, 그건 LLM이 이미 아는 상식을 실험으로 다시 알아내는 일이다.
+검토와 planner가 적은 `cites`/`reason`은 검증 없이 `plan.json`에 그대로 싣는다
+(나중에 실제 값과 대조할 수 있게). 버린 행동도 이유와 함께 남긴다 — planner가
+무엇을 하려 했는지가 사라지면 프롬프트를 고칠 근거도 사라진다.
+
 ## 작업 시 주의
 
 ### 병렬 실행
-컬럼별(`column_interpretation`, 보완 skill)과 관계 그룹별(`semantic_validation`)만
+컬럼별(`column_interpretation`, `column_review`, 보완 skill)과 관계 그룹별
+(`semantic_validation`)만
 병렬로 돈다. 테이블 단위 고정 단계(`semantic_type`, `relation_analysis`,
 `table_context`)는 항상 단독 실행한다 — 같은 결과 슬롯에 둘이 동시에 쓰면
 마지막 승자가 비결정적이다. 동시 실행 상한은 `LLM_MAX_CONCURRENCY`(RateLimiter)
@@ -86,6 +107,12 @@ gap_planner에게 맡긴 지점이다.
 ### LLM 출력을 그대로 실행하지 않는다
 계획/배정은 반드시 `plan.py`의 정제 함수를 거친다(모르는 skill 이름, 없는 컬럼,
 중복 스텝 제거). 프롬프트가 바뀌어도 실행 계약은 코드가 지킨다.
+
+### 보완 루프에 예산을 지키기
+`MAX_GAP_ROUNDS` / `MAX_ACTIONS_PER_COLUMN` / `MAX_GROUP_COLUMNS`는 `plan.py`
+한곳에 있다. 라운드를 늘리면 토큰은 확실히 늘지만 해석이 나아진다는 보장은
+없으니, 늘리기 전에 `run_robustness.py`의 `flag_ratio`·`dropped_actions`와 회차별
+`flagged_columns`(같은 컬럼이 매번 걸리는지)로 효과부터 볼 것. 재검토 대상은 그 라운드에 **실제로 바뀐 컬럼**뿐이다.
 
 ### 결과 문서 5벌은 계약이다
 `columns` / `rulebase` / `plan` / `table` / `llm_calls`. 각각 `<output>.<이름>.json`

@@ -8,8 +8,9 @@
 구조:
 
     1차 pass   semantic_type -> column_interpretation(컬럼별 병렬)
-               -> relation_analysis(pairwise 증거 있을 때만)          [고정 단계]
-    gap 보충   gap_planner 판단 -> 배정된 (컬럼, skill) 병렬 실행      [보완 skill]
+               -> column_review(컬럼별 병렬)                          [고정 단계]
+    gap 보충   검토가 넘긴 컬럼이 있을 때만 gap_planner -> 배정 병렬 실행 [보완 skill]
+    관계       relation_analysis(pairwise 증거 있을 때만)             [고정 단계]
     검증       관계 그룹별 semantic_validation 병렬 -> probe로 실측 대조 [고정 단계]
     마무리     table_context                                          [고정 단계]
     수정 라운드 검증이 needs_revision이면 replan -> 해당 단계만 재실행 -> 재검증
@@ -17,6 +18,11 @@
 여기서 LLM에게 "무엇을 돌릴까"를 묻는 곳은 gap 보충 하나뿐이다. 나머지는 전부
 코드가 정한 순서다 - 무조건 만들어야 하는 산출물에 계획 호출을 넣으면 비용만
 늘고 재현성이 떨어진다.
+
+gap 보충은 판단이 둘로 갈린다. 컬럼별 검토가 "더 볼지"만 정하고(병렬), 넘어온
+컬럼들을 gap_planner가 한자리에서 보고 "무엇을 할지"를 정한다(단독). 여러 컬럼을
+묶어 보는 판단은 컬럼 하나만 보는 검토가 할 수 없어서 이렇게 나눴다. 넘어온
+컬럼이 없으면 planner를 아예 부르지 않는다.
 
 단계를 지날 때마다 컬럼이 어떻게 바뀌었는지를 `ColumnHistory`에 남긴다. 결과
 dict는 최신 상태만 들고 있어서, 기록하지 않으면 "gap 보충이 무엇을 바꿨는지"가
@@ -40,7 +46,14 @@ from column_semantics.core.probes import apply_probes, with_measurements
 from column_semantics.core.relations import build_relation_groups
 from column_semantics.core.timeline import Timeline
 from column_semantics.pipeline.documents import PARTS, build_documents
-from column_semantics.pipeline.plan import STAGE_ORDER, first_pass_stages, revision_steps
+from column_semantics.pipeline.plan import (
+    MAX_GAP_ROUNDS,
+    STAGE_ORDER,
+    first_pass_stages,
+    flagged_columns,
+    revision_steps,
+    sanitize_gap_actions,
+)
 from column_semantics.pipeline.stage_runner import StageRunner
 
 Documents = Dict[str, Dict[str, Any]]
@@ -167,64 +180,130 @@ def validate_grouped(
     }
 
 
+def review_columns_parallel(
+    runner: StageRunner,
+    evidence: Dict[str, Any],
+    results: Dict[str, Any],
+    max_workers: int,
+    columns: List[str],
+    history: Optional[ColumnHistory] = None,
+    stage_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """컬럼별로 "더 볼지 말지"를 병렬로 묻는다. 해석과 같은 팬아웃 모양이다."""
+    print(f"[REVIEW] {len(columns)}개 컬럼 병렬 검토", flush=True)
+    outputs = _parallel(max_workers, columns, lambda col: runner.review_column(col, evidence, results))
+
+    reviews: Dict[str, Any] = {}
+    for i, col in enumerate(columns):
+        review = outputs[i]["review"]
+        reviews[col] = review
+        if history is not None:
+            history.record(col, "column_review", review, **(stage_info or {}))
+    return reviews
+
+
 def resolve_gaps(
     runner: StageRunner,
     evidence: Dict[str, Any],
     results: Dict[str, Any],
     max_workers: int,
+    reviews: Dict[str, Any],
     history: Optional[ColumnHistory] = None,
     stage_info: Optional[Dict[str, Any]] = None,
+    action_counts: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
-    """1차 해석 직후 호출. gap_planner가 컬럼별 상태를 보고 무엇을 붙일지 판단하면
-    그 배정을 병렬로 실행해서 column_interpretation.columns[col]에 반영한다."""
-    diagnosis = runner.diagnose_gaps(evidence, results)
-    assignments = diagnosis.get("gap_assignments", [])
-    record = {"raw": diagnosis.get("raw"), "assignments": assignments}
-    if not assignments:
-        print("[GAP] 보충 필요한 컬럼 없음", flush=True)
+    """검토가 넘긴 컬럼에 대해 gap_planner가 정한 행동을 실행한다.
+
+    넘어온 컬럼이 없으면 planner를 부르지 않고 그대로 끝낸다 - planner가 도는
+    조건은 임계값이 아니라 검토 결과다.
+    """
+    flagged = flagged_columns(reviews)
+    record: Dict[str, Any] = {
+        "reviews": reviews,
+        "flagged": flagged,
+        "planner": None,
+        "actions": [],
+        "dropped": [],
+        "results": [],
+    }
+    if not flagged:
+        print("[GAP] 검토를 통과하지 못한 컬럼 없음 - planner 호출 생략", flush=True)
+        return record
+
+    print(f"[GAP] 검토가 넘긴 컬럼 {len(flagged)}개: {', '.join(flagged)}", flush=True)
+    planned = runner.plan_gaps(flagged, reviews, evidence, results)
+    actions, dropped = sanitize_gap_actions(
+        planned.get("actions"),
+        flagged,
+        evidence["table"]["columns"],
+        action_counts,
+    )
+    record["planner"] = {"raw": planned.get("raw"), "skipped": planned.get("skipped")}
+    record["actions"] = actions
+    record["dropped"] = dropped
+    if dropped:
+        print(f"[GAP] 실행 불가로 버린 행동 {len(dropped)}건", flush=True)
+    if not actions:
+        print("[GAP] 실행할 행동 없음", flush=True)
         return record
 
     print(
-        f"[GAP] {len(assignments)}건 보충 실행: "
-        + ", ".join(f"{a['column']}->{a['skill']}" for a in assignments),
+        f"[GAP] {len(actions)}건 실행: "
+        + ", ".join(f"{a['action']}({'+'.join(a['columns'])})" for a in actions),
         flush=True,
     )
-
     outputs = _parallel(
         max_workers,
-        assignments,
+        actions,
         lambda a: runner.run_gap_skill(
-            a["skill"], a["column"], evidence, results, a.get("reason", "")
+            a["action"], a["columns"], evidence, results, a.get("reason", "")
         ),
     )
 
     columns = results.setdefault("column_interpretation", {}).setdefault("columns", {})
-    for i, a in enumerate(assignments):
+    for i, action in enumerate(actions):
         out = outputs.get(i)
-        col = a["column"]
-        if not isinstance(out, dict) or col not in columns:
+        if not isinstance(out, dict):
             continue
-        before = dict(columns[col]) if isinstance(columns[col], dict) else columns[col]
-        for key in ("selected_meaning", "status", "sparsity_reason", "note"):
-            # None은 "이번엔 안 바꿈"이라는 뜻이라 - 있는 값을 null로 지워버리면 안 된다.
-            if out.get(key) is not None:
-                columns[col][key] = out[key]
-        columns[col].setdefault("gap_history", []).append(
-            {"skill": a["skill"], "reason": a.get("reason", "")}
-        )
-        if history is not None:
-            history.record_change(
-                col,
-                "gap",
-                before,
-                dict(columns[col]),
-                skill=a["skill"],
-                reason=a.get("reason", ""),
-                skill_output=out,
-                **(stage_info or {}),
+        record["results"].append({"action": action["action"], "columns": action["columns"], "output": out})
+        for col in action["columns"]:
+            update = _column_update(action["action"], col, out)
+            if not update or col not in columns:
+                continue
+            before = dict(columns[col]) if isinstance(columns[col], dict) else columns[col]
+            for key in ("selected_meaning", "status", "sparsity_reason", "note", "evidence"):
+                # None은 "이번엔 안 바꿈"이라는 뜻이라 - 있는 값을 null로 지워버리면 안 된다.
+                if update.get(key) is not None:
+                    columns[col][key] = update[key]
+            columns[col].setdefault("gap_history", []).append(
+                {"skill": action["action"], "reason": action.get("reason", "")}
             )
+            if history is not None:
+                history.record_change(
+                    col,
+                    "gap",
+                    before,
+                    dict(columns[col]),
+                    skill=action["action"],
+                    with_columns=[c for c in action["columns"] if c != col],
+                    reason=action.get("reason", ""),
+                    skill_output=update,
+                    **(stage_info or {}),
+                )
 
     return record
+
+
+def _column_update(action: str, column: str, output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """보완 출력에서 이 컬럼에 반영할 부분을 꺼낸다.
+
+    컬럼 하나짜리 보완은 출력 전체가 그 컬럼 몫이고, 여러 컬럼을 보는 보완은
+    `columns[col]`이 그 컬럼 몫이다.
+    """
+    if action == "joint_interpretation":
+        update = (output.get("columns") or {}).get(column)
+        return update if isinstance(update, dict) else None
+    return output
 
 
 # ---------------------------------------------------------------------
@@ -305,7 +384,7 @@ def run_pipeline(
     history = ColumnHistory()
     probe_log: List[Dict[str, Any]] = []
     validation_rounds: List[Dict[str, Any]] = []
-    planning: Dict[str, Any] = {"first_pass": {}, "gap_planning": {}, "replans": []}
+    planning: Dict[str, Any] = {"first_pass": {}, "gap_rounds": [], "replans": []}
 
     def build_docs(status: str, validation_status: str = "not_yet_run") -> Documents:
         return build_documents(
@@ -434,27 +513,61 @@ def run_pipeline(
         flush=True,
     )
 
-    with runner.stage(stage="first_pass", round=1):
-        for stage in first_pass:
-            if stage == "column_interpretation":
-                exec_columns(phase="exec", columns=all_columns)
-            else:
-                exec_stage(stage, phase="exec")
+    action_counts: Dict[str, int] = {}
 
-    # -- gap 보충 -------------------------------------------------------
-    with timeline.measure(event="gap_resolution") as entry:
-        with runner.stage(stage="gap", round=1, phase="exec"):
-            gap_record = resolve_gaps(
-                runner,
-                evidence,
-                results,
-                max_workers,
-                history=history,
-                stage_info={"phase": "exec", "round": 1},
-            )
-        planning["gap_planning"] = gap_record
-        entry["assignments"] = len(gap_record.get("assignments", []))
-    checkpoint()
+    def gap_round(round_no: int, columns_to_review: List[str]) -> Dict[str, Any]:
+        """검토 -> (넘어온 게 있으면) planner -> 실행. 한 라운드가 여기 전부다."""
+        with timeline.measure(event="stage", phase="exec", stage="column_review", round=round_no):
+            with runner.stage(stage="gap", round=round_no, phase="exec"):
+                reviews = review_columns_parallel(
+                    runner,
+                    evidence,
+                    results,
+                    max_workers,
+                    columns=columns_to_review,
+                    history=history,
+                    stage_info=_stage_info("exec", round_no),
+                )
+        checkpoint()
+
+        with timeline.measure(event="gap_resolution", round=round_no) as entry:
+            with runner.stage(stage="gap", round=round_no, phase="exec"):
+                record = resolve_gaps(
+                    runner,
+                    evidence,
+                    results,
+                    max_workers,
+                    reviews=reviews,
+                    history=history,
+                    stage_info=_stage_info("exec", round_no),
+                    action_counts=action_counts,
+                )
+            entry["flagged"] = len(record["flagged"])
+            entry["actions"] = len(record["actions"])
+        record["round"] = round_no
+        planning["gap_rounds"].append(record)
+        checkpoint()
+        return record
+
+    with runner.stage(stage="first_pass", round=1):
+        exec_stage("semantic_type", phase="exec")
+        exec_columns(phase="exec", columns=all_columns)
+
+    # -- 검토 -> gap 보충 -------------------------------------------------
+    # 보완이 컬럼 해석을 바꾸므로 relation_analysis보다 먼저 돈다 - 관계 분석이
+    # 바뀌기 전 해석을 근거로 삼으면 그만큼 낡은 판단이 된다.
+    touched = gap_round(1, all_columns)
+    for round_no in range(2, MAX_GAP_ROUNDS + 1):
+        # 다시 검토하는 것은 이번 라운드에 실제로 바뀐 컬럼뿐이다. 손대지 않은
+        # 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다.
+        changed = sorted({c for r in touched["results"] for c in r["columns"]})
+        if not changed:
+            break
+        touched = gap_round(round_no, changed)
+
+    if "relation_analysis" in first_pass:
+        with runner.stage(stage="first_pass", round=1):
+            exec_stage("relation_analysis", phase="exec")
 
     # -- 검증 -> 마무리 --------------------------------------------------
     with runner.stage(stage="validation", round=1):
