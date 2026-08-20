@@ -11,11 +11,13 @@
   column-poc-job.yaml(Job: column-poc-batch) 결과: Job이 시작될 때 KST 타임스탬프를
   한 번 찍어 <실행타임스탬프>/ 폴더를 만들고, 그 실행이 처리한 CSV들이 전부
   그 아래 <csv_stem>/ 하위폴더로 들어간다(Job 실행 한 번 = 실험 하나 = 폴더 하나 -
-  CSV마다 타임스탬프가 따로 찍히지 않는다). 각 <csv_stem>/ 안에는
-  result.semantic.json + run.log(성공/실패 모두 항상 남음, 맨 아래에 최종/partial
-  결과 포함)가 같이 들어있고, 중간에 죽었으면 result.semantic.json.partial.json도
-  남아있다. (이 구조 이전 버전들 - CSV마다 타임스탬프 폴더였던 것, 그 이전의
-  평평한 파일들 - 은 그대로 남아있으니 같이 받힌다.)
+  CSV마다 타임스탬프가 따로 찍히지 않는다). 각 <csv_stem>/ 안에는 결과 문서
+  5개(result.semantic.columns.json / .rulebase.json / .plan.json / .table.json /
+  .llm_calls.json)와 run.log(성공/실패 모두 항상 남음)가 같이 들어있다. 중간에
+  죽은 CSV도 파일은 그대로 있고, 완주 여부는 파일 유무가 아니라 meta.status가
+  done인지로 구분한다 - 이 스크립트가 받은 뒤에 그걸 확인해서 알려준다.
+  (이 구조 이전 버전들 - result.semantic.json 하나였던 것, CSV마다 타임스탬프
+  폴더였던 것, 그 이전의 평평한 파일들 - 은 그대로 남아있으니 같이 받힌다.)
 
 .PARAMETER LocalDir
   결과를 받을 로컬 디렉터리. 없으면 생성한다.
@@ -80,8 +82,21 @@ kubectl cp @nsArgs "${PodName}:${remotePath}" $LocalDir
 Write-Host "`n완료. 받은 내용:"
 Get-ChildItem -Recurse $LocalDir | ForEach-Object { Write-Host "  $($_.FullName)" }
 
+# 완주하지 못한 실행 찾기. 파일은 어차피 남아 있으므로 파일명이 아니라
+# meta.status를 봐야 한다(in_progress = 그 CSV는 중간에 죽은 것).
+$unfinished = Get-ChildItem -Recurse $LocalDir -Filter "*.columns.json" -ErrorAction SilentlyContinue |
+    Where-Object {
+        try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).meta.status -ne "done" }
+        catch { $true }  # 읽다 만 JSON도 미완주로 본다
+    }
+if ($unfinished) {
+    Write-Host "`n아직 진행 중이거나 중간에 죽은 CSV가 있습니다(meta.status != done):"
+    $unfinished | ForEach-Object { Write-Host "  $($_.FullName)" }
+}
+
+# 예전 형식(단일 result.semantic.json)의 부분 결과도 같이 알려준다.
 $partials = Get-ChildItem -Recurse $LocalDir -Filter "*.partial.json" -ErrorAction SilentlyContinue
 if ($partials) {
-    Write-Host "`n아직 진행 중이거나 중간에 실패한 CSV의 부분 결과(.partial.json)가 있습니다:"
+    Write-Host "`n예전 형식의 부분 결과(.partial.json)도 있습니다:"
     $partials | ForEach-Object { Write-Host "  $($_.FullName)" }
 }

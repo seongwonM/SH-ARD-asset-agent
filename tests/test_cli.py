@@ -14,42 +14,61 @@ from conftest import SKILL_DIR
 from fakes import FakeLLM
 
 from column_semantics import app, cli
+from column_semantics.pipeline.documents import PARTS
 
 
-def test_cli_writes_result_and_cleans_up_checkpoint(tmp_path, equipment_csv, monkeypatch):
-    monkeypatch.setattr(app, "make_llm_from_env", lambda **kwargs: FakeLLM())
+def read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
+    monkeypatch.setattr(app, "make_llm_from_env", lambda **kwargs: FakeLLM(llm_log=kwargs["llm_log"]))
     out = tmp_path / "result.semantic.json"
 
     cli.main([str(equipment_csv), "--skills", str(SKILL_DIR), "--output", str(out), "--max-rounds", "1"])
 
-    result = json.loads(out.read_text(encoding="utf-8"))
-    assert result["meta"]["status"] == "done"
-    assert result["meta"]["source_csv"] == str(equipment_csv)
-    assert result["results"]["table_context"]["grain"]
-    # 성공하면 체크포인트는 남기지 않는다.
-    assert not (tmp_path / "result.semantic.json.partial.json").exists()
+    paths = app.output_paths(out)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [equipment_csv.name] + [paths[part].name for part in PARTS]
+    )
+
+    columns = read(paths["columns"])
+    assert columns["meta"]["status"] == "done"
+    assert columns["meta"]["source_csv"] == str(equipment_csv)
+    assert columns["columns"]["power_value"]["stages"]
+    assert read(paths["table"])["table_context"]["grain"]
+    assert read(paths["rulebase"])["column_profiles"]["run_id"]["name"] == "run_id"
+    assert read(paths["plan"])["first_pass"]["skills"][0] == "semantic_type"
+
+    calls = read(paths["llm_calls"])
+    assert calls["prompts"]["column_interpretation"].startswith("#")
+    interpretations = [c for c in calls["calls"] if c["skill"] == "column_interpretation"]
+    assert len(interpretations) == 6  # 컬럼 수만큼
+    assert interpretations[0]["input"]["target_column"] in columns["columns"]
+    assert json.loads(interpretations[0]["output_text"]) == interpretations[0]["output"]
 
 
-def test_checkpoint_survives_a_mid_run_failure(tmp_path, equipment_csv, monkeypatch):
+def test_files_survive_a_mid_run_failure(tmp_path, equipment_csv, monkeypatch):
+    """중간에 죽어도 그때까지의 문서는 파일에 남아 있고, meta.status로 미완주가 드러난다."""
+
     class Exploding(FakeLLM):
         def _on_gap_planner(self, label, payload):
             raise RuntimeError("엔드포인트 죽음")
 
     monkeypatch.setattr(app, "make_llm_from_env", lambda **kwargs: Exploding())
     out = tmp_path / "result.semantic.json"
-    checkpoint = tmp_path / "result.semantic.json.partial.json"
 
     try:
         cli.main([str(equipment_csv), "--skills", str(SKILL_DIR), "--output", str(out)])
     except RuntimeError:
         pass
 
-    assert not out.exists()
-    partial = json.loads(checkpoint.read_text(encoding="utf-8"))
-    assert partial["meta"]["status"] == "in_progress"
-    # 죽기 전까지 계산된 skill 출력은 남아 있어야 한다.
-    assert "semantic_type" in partial["results"]
-    assert partial["results"]["column_interpretation"]["columns"]
+    paths = app.output_paths(out)
+    columns = read(paths["columns"])
+    assert columns["meta"]["status"] == "in_progress"
+    # 죽기 전까지 계산된 해석은 남아 있어야 한다.
+    assert columns["columns"]["power_value"]["final"]["interpretation"]
+    assert read(paths["rulebase"])["column_profiles"]
 
 
 def test_default_skill_dir_points_at_repo_skills():

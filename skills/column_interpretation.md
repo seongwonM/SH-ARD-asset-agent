@@ -25,8 +25,9 @@ plus the raw names of every other column for naming-convention context.
 6. "High confidence" is not "ground truth"; leave evidence trails.
 7. If `revision_feedback.checks` is present, it may include entries about columns other than `target_column` — only
    act on ones that actually name `target_column`. For those, treat the entry as a falsified hypothesis (the
-   contradiction is in `observed` vs `expected_constraint`): either (a) pick a different meaning_candidate (and
-   update `selected_meaning` to match) consistent with `observed`, (b) add the contradiction to `counter_evidence`
+   contradiction is in `measured` - the executor's actual measurement - vs `expected_constraint`): either (a) pick
+   a different meaning_candidate (and update `selected_meaning` to match) consistent with `measured`, (b) add the
+   contradiction to `counter_evidence`
    and lower confidence, or (c) mark `status: "ambiguous"` if no candidate fits. Say explicitly in `evidence` that
    this was revised because of validation feedback. If no entry names `target_column`, ignore `revision_feedback`
    entirely and interpret normally.

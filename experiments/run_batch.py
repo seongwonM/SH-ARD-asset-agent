@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from column_semantics.adapters.env import load_dotenv  # noqa: E402
-from column_semantics.app import DEFAULT_SKILL_DIR, analyze_csv, write_json  # noqa: E402
+from column_semantics.app import DEFAULT_SKILL_DIR, analyze_csv  # noqa: E402
 from column_semantics.core.clock import KST  # noqa: E402
 
 
@@ -52,13 +52,12 @@ def main() -> int:
         out = exp_dir / "result.semantic.json"
         print(f"\n[RUN] {csv.name} -> {exp_dir}")
         try:
-            result = analyze_csv(
+            analyze_csv(
                 csv_path=csv,
                 skill_dir=args.skills,
                 max_rounds=args.max_rounds,
-                checkpoint_path=out.with_suffix(out.suffix + ".partial.json"),
+                output=out,
             )
-            write_json(out, result)
         except Exception:  # noqa: BLE001 - CSV 하나가 실패해도 나머지는 계속 돈다
             traceback.print_exc()
             failed.append(csv.stem)

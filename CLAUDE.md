@@ -78,10 +78,22 @@ probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **
 계획/배정은 반드시 `plan.py`의 정제 함수를 거친다(모르는 skill 이름, 없는 컬럼,
 중복 스텝 제거). 프롬프트가 바뀌어도 실행 계약은 코드가 지킨다.
 
-### 결과 JSON 최상위 블록은 계약이다
-`meta` / `plans` / `evidence` / `results` / `timeline`. 배치 로그 수집과 결과
-분석이 이 구조를 본다. 바꾸려면 `tests/test_pipeline.py`의 계약 테스트와
-`k8s/column-poc-job.yaml` 주석을 같이 고칠 것.
+### 결과 문서 5벌은 계약이다
+`columns` / `rulebase` / `plan` / `table` / `llm_calls`. 각각 `<output>.<이름>.json`
+으로 떨어지고, 무엇이 어디 들어가는지는 `pipeline/documents.py`에 있다. 배치 로그
+수집과 결과 분석이 이 구조를 본다. 바꾸려면 `tests/test_pipeline.py`의 계약
+테스트와 `k8s/column-poc-job.yaml`·다운로드 스크립트 주석을 같이 고칠 것.
+
+문서를 가르는 기준은 크기가 아니라 **출처**다. 룰베이스로 계산한 값은 `rulebase`
+에만 두고 다른 문서는 `probe_id`/`check_id`로 가리킨다 — 같은 값을 복사해 두면
+한쪽만 고쳐질 때 어느 쪽이 맞는지 알 수 없다. 반대로 **LLM에 되돌려주는 피드백
+에는 실측값을 `measured`로 붙인다**(`core/probes.py`의 `with_measurements`).
+저장 구조 때문에 재시도 힌트가 비면 probe를 붙인 의미가 없어진다.
+
+### 덮어쓰기는 기록하고 덮어쓴다
+gap 보충과 수정 라운드는 `column_interpretation.columns[col]`을 제자리에서
+갈아치운다. 그 전에 `ColumnHistory`에 before/after를 남기지 않으면 "무엇이 왜
+바뀌었는지"가 사라진다 - 새로 값을 덮어쓰는 지점을 만들면 기록도 같이 만들 것.
 
 ### 프로파일러에서 추정값을 만들지 않는다
 `core/profiling.py`의 출력이 이후 모든 판단의 근거 집합이라, 오염되면 전파된다.

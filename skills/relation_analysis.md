@@ -25,7 +25,8 @@ constraint and moderate confidence, so `semantic_validation` can issue a data pr
 
 # Revision feedback
 If the input contains `revision_feedback.checks`, those columns' current interpretation was already tested against
-data and failed (see each check's `hypothesis`, `expected_constraint`, `observed`). Use cross-column evidence to find
+data and failed (see each check's `hypothesis`, `expected_constraint`, and `measured` — the executor's actual
+measurement). Use cross-column evidence to find
 an interpretation that actually fits the observed numbers (different scale, different unit, a group/hierarchy
 relationship instead of an independent measure, etc.) before falling back to just lowering confidence. Record the
 resolution (or why it still cannot be resolved) in `why`.

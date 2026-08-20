@@ -6,7 +6,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from column_semantics.core.probes import ProbeExpressionError, apply_probes, eval_probe_expression, run_probe
+from column_semantics.core.probes import (
+    ProbeExpressionError,
+    apply_probes,
+    eval_probe_expression,
+    run_probe,
+    with_measurements,
+)
 
 
 def test_expression_evaluator_rejects_arbitrary_code():
@@ -48,13 +54,39 @@ def test_probe_refutes_llm_claim(equipment_df):
             }
         ],
     }
-    out = apply_probes(equipment_df, validation)
+    probe_log = []
+    out = apply_probes(equipment_df, validation, probe_log)
     check = out["checks"][0]
     assert check["status"] == "fail"
     assert check["probe_verified"] is True
-    # 실측값이 남아야 재시도 힌트로 쓸 수 있다.
-    assert check["observed"]["true_ratio"] < 0.95
+    # 실측값은 check가 아니라 probe_log에 남는다(rulebase 문서로 간다).
+    assert "observed" not in check
+    assert check["probe_id"] == probe_log[0]["probe_id"]
+    assert probe_log[0]["observed"]["true_ratio"] < 0.95
     assert out["overall_status"] == "needs_revision"
+
+
+def test_failed_check_gets_its_measurement_back_for_the_retry(equipment_df):
+    """저장은 갈라놓지만, LLM에 되돌려주는 피드백에는 실측값이 붙어야 한다."""
+    validation = {
+        "checks": [
+            {
+                "hypothesis": "power_value는 항상 power_limit 이하다",
+                "status": "pass",
+                "observed": "LLM이 쓴 서술",
+                "probe": {
+                    "expression": "v <= lim",
+                    "columns": {"v": "power_value", "lim": "power_limit"},
+                },
+            }
+        ]
+    }
+    probe_log = []
+    out = apply_probes(equipment_df, validation, probe_log)
+    hinted = with_measurements(out["checks"], probe_log)[0]
+    assert hinted["measured"]["true_ratio"] < 0.95
+    # skill이 쓴 서술형 observed를 실측값이 덮지 않는다.
+    assert hinted["observed"] == "LLM이 쓴 서술"
 
 
 def test_probe_failure_to_run_leaves_claim_untouched(equipment_df):
@@ -68,10 +100,12 @@ def test_probe_failure_to_run_leaves_claim_untouched(equipment_df):
             }
         ],
     }
-    out = apply_probes(equipment_df, validation)
+    probe_log = []
+    out = apply_probes(equipment_df, validation, probe_log)
     check = out["checks"][0]
     assert check["status"] == "pass"
     assert "probe_verified" not in check
+    assert probe_log == []
     assert out["overall_status"] == "pass"
 
 

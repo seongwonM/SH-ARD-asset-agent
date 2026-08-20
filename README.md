@@ -35,6 +35,8 @@ src/column_semantics/
     relations.py             컬럼 쌍 관계 / 복합키 후보 / 관계 그룹
     evidence.py              위 둘을 묶은 증거 블록
     probes.py                skill이 요청한 검사식 평가 (안전한 산술/비교 계산기)
+    history.py               컬럼이 단계마다 어떻게 바뀌었는지
+    llm_log.py               LLM 호출 입출력 원문
     timeline.py, clock.py    실행 궤적
   adapters/                바깥 세계. 여기만 갈아끼우면 다른 환경에 붙는다
     csv_source.py            인코딩 추정 + 깨진 행 복구
@@ -45,6 +47,7 @@ src/column_semantics/
     plan.py                  고정 순서 + LLM 계획 출력 정제
     skill_runner.py          skill별 payload 조립
     orchestrator.py          실행 루프
+    documents.py             결과를 5개 문서로 나눠 담기
   app.py                   composition root (CLI도 실험도 여기를 부른다)
   cli.py
 skills/*.md                skill = 프롬프트 파일 하나. 등록 절차 없음
@@ -71,22 +74,31 @@ gap   gap_planner가 컬럼별로 부족한 점 판단 → 배정된 보충 skil
 호출을 넣으면 비용만 늘고 재현성이 떨어진다. LLM이 계획하는 지점은 두 곳뿐이다
 — 컬럼별 보충(`gap_planner`)과 검증 실패 후 재계획(`planner`).
 
-## 결과 JSON
+## 결과 파일
 
-```json
-{
-  "meta":     { "status", "validation_status", "llm_model", "started_at", ... },
-  "plans":    [ 재계획 라운드별 스텝 ],
-  "evidence": { "table", "column_profiles", "relation_evidence", "grain_candidates" },
-  "results":  { "semantic_type", "column_interpretation", "relation_analysis",
-                "semantic_validation", "table_context" },
-  "timeline": [ 각 skill/LLM 호출/probe의 시작·종료 (KST) ]
-}
-```
+`--output result.semantic.json`을 주면 그 경로를 기준으로 **문서 5개**가 나온다.
+가르는 기준은 크기가 아니라 **출처**다 — LLM이 주장한 것, 데이터가 측정한 것,
+코드가 계획한 것이 한 트리에 섞여 있으면 결과를 분석할 때마다 어느 쪽 근거인지
+다시 따져야 한다.
 
-skill이 끝날 때마다 `<output>.partial.json`에 체크포인트를 남긴다. 끝까지
-성공하면 최종 파일로 대체되고 partial은 지워진다 — 중간에 죽어도 그때까지의
-skill 출력은 남는다.
+| 파일 | 담는 것 |
+|---|---|
+| `<out>.columns.json` | 컬럼별 해석이 단계마다 어떻게 바뀌었는지 (`stages`의 before/after/changed) |
+| `<out>.rulebase.json` | 룰베이스 계산값 전부 — 프로파일, 관계 증거, grain 후보, probe 실측값 |
+| `<out>.plan.json` | 1차 고정 순서, gap 배정, 재계획 라운드(LLM 원출력 + 정제 결과), 실행 구간 |
+| `<out>.table.json` | 테이블 단위 산출물 — table_context, relation_analysis, 검증 라운드 |
+| `<out>.llm_calls.json` | 모든 LLM 호출의 system 프롬프트 / 입력 payload / 응답 원문 |
+
+모든 문서가 같은 `meta`(status, validation_status, llm_model, started_at, …)를
+들고 있고 `meta.part`로 자기가 어느 문서인지 밝힌다.
+
+**측정값은 rulebase에만 있다.** check는 `probe_id`로, 컬럼 이력은 `check_id`로
+가리킨다 — 같은 값을 두 문서에 복사해 두면 한쪽만 고쳐질 때 어느 쪽이 맞는지
+알 수 없다. 단, LLM에게 되돌려주는 재시도 피드백에는 실측값을 `measured`로 붙여
+보낸다. 반증의 근거가 곧 다음 시도의 힌트다.
+
+skill이 끝날 때마다 이 5개 파일을 그대로 덮어쓴다. 중간에 죽어도 그때까지의
+결과는 파일에 남고, 완주 여부는 `meta.status`(`in_progress` / `done`)로 본다.
 
 `meta.validation_status`가 `unresolved_after_max_rounds`면 반증된 주장을
 끝내 해소하지 못한 채 끝난 것이다. `done`만 보고 넘어가면 안 된다.

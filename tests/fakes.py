@@ -6,16 +6,21 @@ adapters.LLMClient 프로토콜만 만족하면 되므로 openai 패키지도 �
 
 from __future__ import annotations
 
+import json
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class FakeLLM:
     model = "fake-model"
 
-    def __init__(self, refute_first_validation: bool = True):
+    def __init__(self, refute_first_validation: bool = True, llm_log: Any = None):
         self.calls: List[Dict[str, Any]] = []
         self.refute_first_validation = refute_first_validation
+        # 진짜 어댑터는 호출 원문을 LLMLog에 남긴다(그 동작 자체는
+        # tests/test_llm_log.py가 검증한다). 여기서 log를 받는 것은 app -> 문서 ->
+        # 파일로 이어지는 배선이 실제로 이어져 있는지 확인하기 위한 최소한이다.
+        self.llm_log = llm_log
         self._validation_rounds = 0
         self._lock = threading.Lock()
 
@@ -28,19 +33,47 @@ class FakeLLM:
         *,
         label: str = "",
         max_retries: int = 1,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         with self._lock:
-            self.calls.append({"label": label, "prompt": system_prompt, "payload": payload})
+            self.calls.append(
+                {
+                    "label": label,
+                    "prompt": system_prompt,
+                    "payload": payload,
+                    "context": context or {},
+                }
+            )
         head = label.split(":", 1)[0]
         handler = getattr(self, f"_on_{head}", None)
         if handler is None:
             raise AssertionError(f"FakeLLM이 모르는 label: {label}")
-        return handler(label, payload)
+        result = handler(label, payload)
+        if self.llm_log is not None:
+            self.llm_log.add(
+                prompt_ref=self.llm_log.register_prompt(
+                    str((context or {}).get("skill") or label), system_prompt
+                ),
+                payload=payload,
+                response_text=json.dumps(result, ensure_ascii=False),
+                response=result,
+                context=context or {},
+                status="ok",
+                attempt=1,
+                model=self.model,
+            )
+        return result
 
     # -- 편의 ----------------------------------------------------------
 
     def labels(self) -> List[str]:
         return [c["label"] for c in self.calls]
+
+    def context_for(self, label: str) -> Dict[str, Any]:
+        for call in self.calls:
+            if call["label"] == label:
+                return call["context"]
+        raise KeyError(label)
 
     def payload_for(self, label: str) -> Dict[str, Any]:
         for call in self.calls:
@@ -98,6 +131,7 @@ class FakeLLM:
                 "checks": [
                     {
                         "hypothesis": "power_value는 power_limit 이하다",
+                        "columns": ["power_value", "power_limit"],
                         "status": "pass",
                         "probe": {
                             "expression": "v <= lim",

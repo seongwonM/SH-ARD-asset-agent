@@ -55,9 +55,11 @@ Single-column example — do not skip the probe just because there's only one co
 - Use `target`/`tolerance` when `expression` computes a number that should be close to a constant.
 - Omit `target` when `expression` is itself a comparison (e.g. `"a <= b"`, `"a >= 0"`) — the executor reports what
   fraction of rows satisfy it.
-The executor evaluates this against the actual rows and overwrites that check's `observed`/`status` with the
-measured result — leave your own `observed`/`status` as a best-effort placeholder; it will be replaced. This is a
-general calculator, not a fixed menu — express whatever relationship you actually suspect.
+The executor evaluates this against the actual rows and sets that check's `status` from what it measured; your
+own `status` is only a best-effort placeholder and may be replaced. The measurement itself is stored separately and
+comes back to you as `measured` if this check is revisited, so leave your `observed` as your own reading of the
+aggregate evidence — it is never overwritten. This is a general calculator, not a fixed menu — express whatever
+relationship you actually suspect.
 
 For percent/ratio-scale claims specifically: use the exact scale `column_interpretation.selected_meaning`'s `unit`
 already stated (e.g. `percent_0_100` vs `fraction_0_1`) as your probe's bound — do not re-guess the scale
@@ -69,7 +71,8 @@ used to pick that scale, the check is circular (guaranteed to pass, tests nothin
 If the input contains `revision_feedback.checks` from a prior round, re-test each of those exact
 `hypothesis`/`columns` pairs first, against the (possibly revised) column_interpretation/relation_analysis for this
 round. For each one, state in the corresponding `checks` entry whether it is now resolved (`status: "pass"`) or still
-contradicted (`status: "warning" | "fail"`, keep the concrete `observed` numbers) — do not silently drop it.
+contradicted (`status: "warning" | "fail"`, keep the concrete numbers from that entry's `measured`) — do not
+silently drop it.
 `revision_feedback.checks` is shared across every group's call, so some entries may name columns outside
 `column_profiles` here — skip those, they're being re-tested by a different group's call.
 

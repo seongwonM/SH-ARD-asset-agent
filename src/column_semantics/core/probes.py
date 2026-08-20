@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import ast
 import operator
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -134,8 +134,18 @@ def run_probe(df: pd.DataFrame, probe: Dict[str, Any]) -> Optional[Dict[str, Any
     return observed
 
 
-def apply_probes(df: pd.DataFrame, validation: Dict[str, Any]) -> Dict[str, Any]:
-    """semantic_validation 결과의 check들에 실측값을 채워 넣고 status를 갱신한다."""
+def apply_probes(
+    df: pd.DataFrame,
+    validation: Dict[str, Any],
+    probe_log: List[Dict[str, Any]],
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """semantic_validation 결과의 check들을 실측에 대고 판정하고 status를 갱신한다.
+
+    실측값 자체는 check에 붙이지 않고 `probe_log`에만 쌓는다. 룰베이스로 계산한
+    값이 LLM 출력 사이사이에 섞여 있으면 "무엇이 측정값이고 무엇이 주장인지"가
+    흐려져서, 측정값은 한곳에 모으고 check에는 참조(`probe_id`)만 남긴다.
+    """
     checks = validation.get("checks")
     if not isinstance(checks, list):
         return validation
@@ -148,7 +158,16 @@ def apply_probes(df: pd.DataFrame, validation: Dict[str, Any]) -> Dict[str, Any]
         if observed is None:
             continue
 
-        check["observed"] = observed
+        probe_id = f"probe-{len(probe_log) + 1}"
+        probe_log.append(
+            {
+                "probe_id": probe_id,
+                **(context or {}),
+                "hypothesis": check.get("hypothesis"),
+                "observed": observed,
+            }
+        )
+        check["probe_id"] = probe_id
         check["probe_verified"] = True
         ratio = observed.get("within_tolerance_ratio", observed.get("true_ratio"))
         if ratio is not None:
@@ -165,3 +184,22 @@ def apply_probes(df: pd.DataFrame, validation: Dict[str, Any]) -> Dict[str, Any]
         validation["overall_status"] = "pass"
 
     return validation
+
+
+def with_measurements(
+    checks: List[Dict[str, Any]], probe_log: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """재시도 힌트용으로 check에 실측값을 도로 붙인 사본을 만든다.
+
+    저장할 때는 측정값과 주장을 갈라놓지만, LLM에게 "왜 틀렸는지" 되돌려줄 때는
+    실측값이 함께 가야 한다 - 반증의 근거가 곧 다음 시도의 힌트다. skill이 쓴
+    서술형 `observed`를 덮지 않도록 `measured`라는 별도 필드에 넣는다.
+    """
+    by_id = {r.get("probe_id"): r.get("observed") for r in probe_log}
+    out: List[Dict[str, Any]] = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        measured = by_id.get(check.get("probe_id"))
+        out.append({**check, "measured": measured} if measured is not None else dict(check))
+    return out

@@ -47,23 +47,24 @@ def load_done(path: Path) -> Set[Key]:
     return done
 
 
-def summarize(result: Dict[str, Any]) -> Dict[str, Any]:
+def summarize(documents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """JSONL 한 줄에 넣을 요약. 전체 결과는 크니 비교 축만 남긴다."""
-    results = result.get("results", {})
-    validation = results.get("semantic_validation") or {}
-    checks = validation.get("checks", []) or []
-    probed = [c for c in checks if c.get("probe_verified")]
-    columns = (results.get("column_interpretation") or {}).get("columns", {})
+    meta = documents["columns"]["meta"]
+    columns = documents["columns"]["columns"]
+    rounds = documents["table"]["validation"].get("rounds") or []
+    checks = rounds[-1]["checks"] if rounds else []
+    interpretations = [c["final"]["interpretation"] or {} for c in columns.values()]
     return {
-        "validation_status": result.get("meta", {}).get("validation_status"),
-        "elapsed_seconds": result.get("meta", {}).get("elapsed_seconds"),
-        "llm_calls": sum(1 for e in result.get("timeline", []) if e.get("event") == "llm_call"),
+        "validation_status": meta.get("validation_status"),
+        "elapsed_seconds": meta.get("elapsed_seconds"),
+        "llm_calls": len(documents["llm_calls"]["calls"]),
         "column_count": len(columns),
-        "resolved_columns": sum(1 for v in columns.values() if v.get("status") == "resolved"),
+        "resolved_columns": sum(1 for v in interpretations if v.get("status") == "resolved"),
         "checks": len(checks),
-        "probe_verified_checks": len(probed),
+        "probe_verified_checks": sum(1 for c in checks if c.get("probe_verified")),
         "failed_checks": sum(1 for c in checks if c.get("status") in {"warning", "fail"}),
-        "table_context": results.get("table_context"),
+        "probes_run": len(documents["rulebase"]["probes"]),
+        "table_context": documents["table"]["table_context"],
     }
 
 
@@ -98,8 +99,8 @@ def main() -> int:
         started = time.time()
         row: Dict[str, Any] = {"dataset": csv.stem, "model": model, "rep": rep}
         try:
-            result = analyze_csv(csv, skill_dir=args.skills, max_rounds=args.max_rounds)
-            row.update(summarize(result))
+            documents = analyze_csv(csv, skill_dir=args.skills, max_rounds=args.max_rounds)
+            row.update(summarize(documents))
             row["status"] = "ok"
         except Exception as e:  # noqa: BLE001 - 한 회차 실패가 실험을 끝내면 안 된다
             traceback.print_exc()

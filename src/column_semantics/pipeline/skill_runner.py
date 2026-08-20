@@ -11,7 +11,9 @@ skill은 그 컬럼의 프로파일만, 그룹 단위 skill은 그 그룹에 속
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import copy
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from column_semantics.adapters.llm import LLMClient
 from column_semantics.adapters.skills import SkillLibrary
@@ -27,9 +29,32 @@ class SkillRunner:
     def __init__(self, skills: SkillLibrary, llm: LLMClient):
         self.skills = skills
         self.llm = llm
+        self._stage: Dict[str, Any] = {}
 
-    def _call(self, skill_name: str, payload: Dict[str, Any], label: str) -> Dict[str, Any]:
-        return self.llm.complete_json(self.skills.prompt(skill_name), payload, label=label)
+    @contextmanager
+    def stage(self, **fields: Any) -> Iterator[None]:
+        """지금 어느 단계를 도는 중인지 표시한다(기록 전용, 실행에는 영향 없다).
+
+        병렬 호출은 항상 한 단계 안에서만 일어나고 단계 전환은 그 병렬 블록이
+        모두 끝난 뒤에 orchestrator가 단독으로 한다. 그래서 쓰는 쪽은 언제나
+        하나, 읽는 쪽만 여럿이라 락이 필요 없다.
+        """
+        previous = self._stage
+        self._stage = {**previous, **fields}
+        try:
+            yield
+        finally:
+            self._stage = previous
+
+    def _call(
+        self, skill_name: str, payload: Dict[str, Any], label: str, **context: Any
+    ) -> Dict[str, Any]:
+        return self.llm.complete_json(
+            self.skills.prompt(skill_name),
+            payload,
+            label=label,
+            context={**self._stage, "skill": skill_name, **context},
+        )
 
     # -- 계획 -----------------------------------------------------------
 
@@ -40,7 +65,9 @@ class SkillRunner:
         validation_feedback: Dict[str, Any],
     ) -> Dict[str, Any]:
         """검증 실패 후 재계획. 1차 pass는 고정 순서라 이 함수를 거치지 않는다 -
-        여기는 항상 '지금까지의 결과 + 검증 실패 이유를 보고 다음에 뭘 해야 하는지'다."""
+        여기는 항상 '지금까지의 결과 + 검증 실패 이유를 보고 다음에 뭘 해야 하는지'다.
+
+        {"raw": LLM 원출력, "plan": 정제된 계획}을 돌려준다."""
         payload = {
             "objective": (
                 "semantic_validation이 지적한 모순을 해소하도록, 필요한 skill만 다시 실행하는 계획을 세운다."
@@ -52,7 +79,10 @@ class SkillRunner:
             "previous_results": previous_results,
             "validation_feedback": validation_feedback,
         }
-        return sanitize_plan(self._call("planner", payload, label="replan"))
+        raw = self._call("planner", payload, label="replan")
+        # 정제는 원본을 제자리에서 고친다. "LLM이 뭘 냈고 코드가 뭘 걸러냈는지"를
+        # 나중에 대조하려면 고치기 전 사본이 있어야 한다.
+        return {"raw": copy.deepcopy(raw), "plan": sanitize_plan(raw)}
 
     def diagnose_gaps(self, evidence: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
         """1차 해석 직후 호출. 컬럼별 상태(ambiguous 여부, null/zero 비율, 타입-의미
@@ -77,9 +107,10 @@ class SkillRunner:
         payload = {"columns": columns_summary, "available_gap_skills": GAP_SKILLS}
         result = self._call("gap_planner", payload, label="gap_planner")
         return {
+            "raw": copy.deepcopy(result),
             "gap_assignments": sanitize_gap_assignments(
                 result.get("gap_assignments"), evidence["table"]["columns"]
-            )
+            ),
         }
 
     # -- 컬럼/그룹 단위 실행 --------------------------------------------
@@ -101,7 +132,10 @@ class SkillRunner:
             "revision_feedback": revision_feedback,
         }
         return self._call(
-            "column_interpretation", payload, label=f"column_interpretation:{column}"
+            "column_interpretation",
+            payload,
+            label=f"column_interpretation:{column}",
+            column=column,
         )
 
     def run_gap_skill(
@@ -147,7 +181,7 @@ class SkillRunner:
         else:
             raise ValueError(f"알 수 없는 gap skill: {skill_name}")
 
-        return self._call(skill_name, payload, label=f"{skill_name}:{column}")
+        return self._call(skill_name, payload, label=f"{skill_name}:{column}", column=column)
 
     def validate_group(
         self,
@@ -204,6 +238,8 @@ class SkillRunner:
             "semantic_validation",
             payload,
             label=f"semantic_validation:{group_label or '+'.join(columns)}",
+            group=group_label,
+            columns=list(columns),
         )
 
     # -- 테이블 단위 실행 ------------------------------------------------
