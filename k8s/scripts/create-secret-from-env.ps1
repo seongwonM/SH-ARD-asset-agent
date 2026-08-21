@@ -36,6 +36,11 @@ param(
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot/_common.ps1"
 
+# 기본값(".env")은 현재 폴더 기준이라 레포 루트가 아닌 곳에서 부르면 못 찾는다.
+# -EnvFile을 명시했을 때는 그 경로를 그대로 존중한다.
+if ($EnvFile -eq ".env" -and -not (Test-Path $EnvFile)) {
+    $EnvFile = Join-Path (Get-RepoRoot) ".env"
+}
 if (-not (Test-Path $EnvFile)) {
     throw "$EnvFile 가 없습니다. LLM_API_ENDPOINT / LLM_API_KEY / LLM_MODEL 등을 담은 .env를 먼저 준비하세요 (.env.example 참고)."
 }
@@ -43,6 +48,7 @@ if (-not (Test-Path $EnvFile)) {
 $envVars = Read-DotEnv $EnvFile
 $Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
 $nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
+Show-K8sTarget -Namespace $Namespace
 
 # Secret에 올릴 키 화이트리스트. 새 키를 추가할 땐 여기와 k8s/*.yaml의
 # envFrom 사용처를 같이 확인할 것.

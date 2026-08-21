@@ -59,17 +59,23 @@ param(
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot/_common.ps1"
 
-$envVars = Read-DotEnv ".env"
+$envVars = Read-DotEnv
 $Namespace = Get-K8sNamespace -EnvVars $envVars -Namespace $Namespace
 $nsArgs = Get-K8sNamespaceArgs -Namespace $Namespace
+Show-K8sTarget -Namespace $Namespace
 
-$podPhase = kubectl get pod $PodName @nsArgs -o jsonpath="{.status.phase}" 2>$null
+$podPhase = kubectl get pod $PodName @nsArgs --ignore-not-found -o jsonpath="{.status.phase}"
 if (-not $podPhase) {
     Write-Host "디버그 Pod($PodName) 생성..."
     kubectl apply @nsArgs -f $PodYaml | Out-Null
 }
 Write-Host "Pod Ready 대기..."
 kubectl wait @nsArgs --for=condition=Ready "pod/$PodName" --timeout=120s
+if ($LASTEXITCODE -ne 0) {
+    # 여기서 끊지 않으면 없는 파드에 대고 cp/exec를 계속 시도하다가
+    # 서로 다른 에러가 줄줄이 나서 진짜 원인(네임스페이스/VPN)이 묻힌다.
+    throw "Pod($PodName)가 Ready가 되지 않았습니다. 위 [대상] 줄의 namespace가 맞는지, 클러스터에 연결돼 있는지 확인하세요."
+}
 
 $remotePath = if ($Target) { "/data/robustness_test_results/$Target" } else { "/data/robustness_test_results" }
 
