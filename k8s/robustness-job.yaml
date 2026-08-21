@@ -38,7 +38,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: robustness
-          image: ghcr.io/seongwonm/sh-ard-asset-agent:d926621563278d715af0b1b7f3028f983002c516
+          image: ghcr.io/seongwonm/sh-ard-asset-agent:ac9017b473bf62e8c64c27ea3775443d3c5289e5
           imagePullPolicy: Always
           command:
             - python
