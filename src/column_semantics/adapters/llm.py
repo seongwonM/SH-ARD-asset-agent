@@ -26,6 +26,37 @@ from column_semantics.core.llm_log import LLMLog
 from column_semantics.adapters.ratelimit import RateLimiter
 
 
+# 호출 하나가 얼마나 버티는가. 전부 환경변수로 조정하고(LLM_ 접두사라 meta의
+# env 스냅샷에 자동으로 실린다), 기본값은 지금까지 돌던 것과 같다.
+#
+#   LLM_MAX_RETRIES           이 어댑터의 재시도 횟수. JSON 파싱 실패까지 포함해
+#                             "무슨 실패든" 다시 던진다. 총 시도 = 이 값 + 1.
+#   LLM_RETRY_BACKOFF_SECONDS 재시도 사이 대기(지수: 5 -> 10 -> 20 ...). 0이면 즉시.
+#   LLM_TIMEOUT_SECONDS       호출 하나의 상한. 큰 테이블에서 응답이 느리면 늘린다.
+#   LLM_HTTP_RETRIES          openai SDK가 연결 오류/429/5xx에 대해 자체적으로 무는
+#                             재시도. 위 재시도의 **안쪽** 층이라 총 시도는 곱해진다.
+#
+# 층이 둘인 것은 잡는 실패가 다르기 때문이다 - SDK는 응답을 못 받은 경우만 알고,
+# 응답을 받았는데 JSON이 아니었던 경우는 여기서만 다시 던질 수 있다.
+DEFAULT_MAX_RETRIES = 1
+DEFAULT_RETRY_BACKOFF = 5.0
+DEFAULT_TIMEOUT = 600.0
+DEFAULT_HTTP_RETRIES = 2
+
+
+def _env_number(name: str, default: float) -> float:
+    """빈 문자열/오타를 기본값으로 되돌린다 - 주말 배치가 설정 오타 하나로
+    시작하자마자 죽는 것보다는, 무엇으로 돌았는지 로그에 남기고 도는 편이 낫다."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[LLM] {name}={raw!r} 를 숫자로 읽지 못해 기본값 {default}을 씁니다.", flush=True)
+        return default
+
+
 class LLMClient(Protocol):
     model: str
 
@@ -35,10 +66,13 @@ class LLMClient(Protocol):
         payload: Dict[str, Any],
         *,
         label: str = "",
-        max_retries: int = 1,
+        max_retries: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """JSON object 하나를 받아 dict로 돌려준다. 끝내 실패하면 예외.
+
+        `max_retries`가 None이면 어댑터가 환경변수로 잡아둔 값을 쓴다 - 재시도
+        정책은 호출부가 아니라 어댑터의 설정이다.
 
         `context`(skill/column/round/phase 등)는 기록에만 쓰인다 - 호출 결과를
         바꾸지 않는다.
@@ -74,11 +108,25 @@ class OpenAICompatibleLLM:
         model: str,
         llm_log: Optional[LLMLog] = None,
         rate_limiter: Optional[RateLimiter] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+        call_settings: Optional[Dict[str, Any]] = None,
     ):
         self.client = client
         self.model = model
         self.llm_log = llm_log
         self.rate_limiter = rate_limiter
+        # 재시도 정책은 어댑터가 갖는다 - 호출부(파이프라인)가 단계마다 다른
+        # 횟수를 정하기 시작하면 "이 실행이 몇 번까지 버텼는가"를 한 곳에서
+        # 말할 수 없게 된다.
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff = max(0.0, retry_backoff)
+        # meta/로그에 그대로 실리는 실행 설정. 재시도·타임아웃이 결과(끝까지
+        # 돌았는지)를 바꾸므로 남겨야 한다.
+        self.call_settings: Dict[str, Any] = call_settings or {
+            "max_retries": self.max_retries,
+            "retry_backoff_seconds": self.retry_backoff,
+        }
 
     def complete_json(
         self,
@@ -86,9 +134,10 @@ class OpenAICompatibleLLM:
         payload: Dict[str, Any],
         *,
         label: str = "",
-        max_retries: int = 1,
+        max_retries: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        max_retries = self.max_retries if max_retries is None else max_retries
         clean_payload = clean_for_json(payload)
         user_text = json.dumps(clean_payload, ensure_ascii=False, indent=2)
         tag = f"[LLM:{label}]" if label else "[LLM]"
@@ -179,6 +228,15 @@ class OpenAICompatibleLLM:
                 if self.rate_limiter is not None:
                     self.rate_limiter.release()
 
+            # 대기는 슬롯을 놓은 **뒤에** 한다. 재시도를 기다리는 동안 동시성
+            # 한 자리를 붙들고 있으면 멀쩡한 다른 컬럼 호출이 그만큼 막힌다.
+            # 엔드포인트가 잠깐 죽은 경우가 재시도의 주 용도라, 간격 없이 바로
+            # 다시 던지는 것은 시도 횟수만 태우는 일이다(지수 백오프).
+            if attempt < max_retries and self.retry_backoff > 0:
+                wait = self.retry_backoff * (2**attempt)
+                print(f"{tag} {wait:.0f}초 후 재시도", flush=True)
+                time.sleep(wait)
+
         raise RuntimeError(f"LLM 호출 실패: {last_error}")
 
     def _record(self, *, started_at: str, elapsed: float, **fields: Any) -> None:
@@ -244,11 +302,30 @@ def make_llm_from_env(
     if missing:
         raise RuntimeError("필수 환경변수가 없습니다: " + ", ".join(missing))
 
+    timeout = _env_number("LLM_TIMEOUT_SECONDS", DEFAULT_TIMEOUT)
+    http_retries = int(_env_number("LLM_HTTP_RETRIES", DEFAULT_HTTP_RETRIES))
+    max_retries = int(_env_number("LLM_MAX_RETRIES", DEFAULT_MAX_RETRIES))
+    retry_backoff = _env_number("LLM_RETRY_BACKOFF_SECONDS", DEFAULT_RETRY_BACKOFF)
+    call_settings = {
+        "max_retries": max(0, max_retries),
+        "retry_backoff_seconds": max(0.0, retry_backoff),
+        "timeout_seconds": timeout,
+        "http_retries": http_retries,
+    }
+
     return OpenAICompatibleLLM(
-        client=OpenAI(base_url=endpoint, api_key=api_key),
+        client=OpenAI(
+            base_url=endpoint,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=http_retries,
+        ),
         model=str(model),
         llm_log=llm_log,
         rate_limiter=rate_limiter,
+        max_retries=max_retries,
+        retry_backoff=retry_backoff,
+        call_settings=call_settings,
     )
 
 

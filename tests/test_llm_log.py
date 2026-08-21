@@ -30,9 +30,14 @@ class StubClient:
         return type("r", (), {"choices": [choice], "usage": type("u", (), {"total_tokens": 42})()})()
 
 
-def make(replies):
+def make(replies, **kwargs):
     log = LLMLog()
-    llm = OpenAICompatibleLLM(client=StubClient(replies), model="stub-model", llm_log=log)
+    # 재시도 대기는 0으로 둔다 - 여기서 보는 것은 무엇이 기록되는가지 타이밍이
+    # 아니고, 기본값(5초 지수 백오프)대로 두면 테스트가 그만큼 멈춘다.
+    kwargs.setdefault("retry_backoff", 0)
+    llm = OpenAICompatibleLLM(
+        client=StubClient(replies), model="stub-model", llm_log=log, **kwargs
+    )
     return llm, log
 
 
@@ -84,6 +89,20 @@ def test_failed_attempt_is_recorded_with_whatever_came_back():
     assert first["output"] is None
     assert "JSON 응답 파싱 실패" in first["error"]
     assert second["status"] == "ok" and second["attempt"] == 2
+
+
+def test_retry_count_comes_from_the_adapter_not_the_call_site():
+    """재시도 정책은 어댑터의 설정이다 - 호출부가 넘기지 않아도 그 값으로 돈다.
+
+    오래 도는 배치에서 이 값을 올리는 것이 유일한 방어선이라, 파이프라인 코드를
+    고치지 않고 설정만으로 바뀌어야 한다.
+    """
+    llm, log = make(
+        [RuntimeError("연결 실패"), RuntimeError("또 실패"), '{"ok": true}'],
+        max_retries=2,
+    )
+    assert llm.complete_json("# p", {"x": 1}, label="planner") == {"ok": True}
+    assert [c["attempt"] for c in log.calls()] == [1, 2, 3]
 
 
 def test_giving_up_raises_after_recording_every_attempt():

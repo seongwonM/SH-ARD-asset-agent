@@ -1,10 +1,10 @@
-"""결과 문서 5벌을 사람이 읽는 Markdown 한 장으로 옮긴다.
+"""결과 문서 6벌을 사람이 읽는 Markdown 한 장으로 옮긴다.
 
-`columns` / `rulebase` / `plan` / `table` / `llm_calls`는 **출처가 다른 것을
-갈라 담기 위해** 나뉘어 있고, 교차 참조는 id로만 한다(`check_id`, `probe_id`).
+`columns` / `rulebase` / `plan` / `table` / `llm_calls` / `lean`은 **출처가 다른
+것을 갈라 담기 위해** 나뉘어 있고, 교차 참조는 id로만 한다(`check_id`, `probe_id`).
 저장 구조로는 옳지만 읽을 때는 사람이 매번 손으로 조인해야 한다 - 이 스크립트가
 하는 일이 그 조인이다. "이 check가 실제로 뭘 쟀는지", "이 컬럼에 무슨 판정이
-붙었는지"가 한자리에 오게 만든다.
+붙었는지", "최소 출력은 같은 컬럼을 뭐라고 했는지"가 한자리에 오게 만든다.
 
 **여기서 새 값을 만들지 않는다.** 세는 것(몇 개가 resolved인지)까지가 전부이고,
 문서에 없는 수치를 계산하거나 추정하지 않는다 - 보고서가 결과와 다른 말을 하기
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-PARTS = ["columns", "rulebase", "plan", "table", "llm_calls"]
+PARTS = ["columns", "rulebase", "plan", "table", "llm_calls", "lean"]
 
 
 # ------------------------------------------------------------------ 불러오기
@@ -36,7 +36,7 @@ def resolve_base(target: Path) -> Optional[Path]:
             return None
         return Path(str(found[0])[: -len(".columns.json")])
     name = str(target)
-    for suffix in (".columns.json", ".rulebase.json", ".plan.json", ".table.json", ".llm_calls.json"):
+    for suffix in [f".{part}.json" for part in PARTS]:
         if name.endswith(suffix):
             return Path(name[: -len(suffix)])
     if name.endswith(".json"):
@@ -289,7 +289,7 @@ def section_columns(docs: Dict[str, Dict[str, Any]], detail: bool) -> List[str]:
                 name,
                 semantic_type_of(interp),
                 get(interp, "status"),
-                esc(get(interp, "selected_meaning", "meaning"), 60),
+                esc(meaning_of(interp), 60),
                 get(interp, "selected_meaning", "unit"),
                 "예" if gap else "-",
                 f"{STATUS_MARK.get(worst, '')} {worst}" if worst else "-",
@@ -319,7 +319,7 @@ def _column_detail(
         out += ["_(해석 없음 - 이 컬럼까지 돌지 못했다)_", ""]
     else:
         out += [
-            f"- **의미**: {esc(get(interp, 'selected_meaning', 'meaning'))}"
+            f"- **의미**: {esc(meaning_of(interp))}"
             + (f" (단위 {esc(get(interp, 'selected_meaning', 'unit'))})" if get(interp, "selected_meaning", "unit") else ""),
             f"- **타입**: {esc(semantic_type_of(interp))} / **status**: {esc(interp.get('status'))}",
         ]
@@ -384,7 +384,7 @@ def _stage_line(s: Dict[str, Any]) -> str:
     if "changed" in s:
         changed = s.get("changed") or []
         line += f" — 바뀐 필드: {esc(changed) if changed else '없음(단계는 돌았다)'}"
-        after_meaning = get(s, "after", "selected_meaning", "meaning")
+        after_meaning = meaning_of(s.get("after"))
         if changed and after_meaning:
             line += f" → {esc(after_meaning, 60)}"
     else:
@@ -502,9 +502,12 @@ def section_plan(docs: Dict[str, Dict[str, Any]]) -> List[str]:
 
     for r in plan.get("gap_rounds") or []:
         out += [f"### 보완 라운드 {esc(r.get('round'))}", ""]
+        # `reviewed`/`malformed_reviews`는 컬럼별 검토 호출이 게이트였던 시절의
+        # 필드다. 그때 만든 결과 폴더가 PVC에 남아 있으므로 같이 읽어준다.
+        considered = r.get("considered") or r.get("reviewed") or []
         out += [
-            f"- 검토 {len(r.get('reviewed') or [])}개 → 넘어감 {len(r.get('flagged') or [])}개: "
-            f"{esc(r.get('flagged'), 120)}",
+            f"- 게이트({esc(r.get('gate') or 'column_review')}) {len(considered)}개 판정 → "
+            f"넘어감 {len(r.get('flagged') or [])}개: {esc(r.get('flagged'), 120)}",
         ]
         if r.get("malformed_reviews"):
             out.append(
@@ -573,6 +576,97 @@ def section_probes(docs: Dict[str, Dict[str, Any]]) -> List[str]:
         out += [
             f"평가하지 못한 probe {len(not_evaluable)}건. **이것은 반증이 아니다** — "
             "해당 check의 상태는 LLM이 쓴 값 그대로 남아 있다.",
+            "",
+        ]
+    return out
+
+
+def meaning_of(interpretation: Any) -> Any:
+    """`selected_meaning`은 {meaning, unit} 객체다. 문자열로 온 것도 받아준다."""
+    selected = get(interpretation, "selected_meaning")
+    if isinstance(selected, dict):
+        return selected.get("meaning")
+    return selected
+
+
+def section_lean(docs: Dict[str, Dict[str, Any]]) -> List[str]:
+    """전체 출력과 최소 출력을 나란히 놓는다.
+
+    이 절의 존재 이유가 그 나란함이다 - 같은 입력으로 받은 두 답이 같은 줄에
+    있어야 "분석용 필드를 빼도 의미가 그대로인가"를 눈으로 판단할 수 있다.
+    """
+    lean = docs.get("lean") or {}
+    out = ["## 최소 출력 비교", ""]
+    if not lean.get("enabled"):
+        return out + [
+            "_(이 실행은 최소 출력을 받지 않았다 - `--lean` 또는 `LEAN_TRACK=1`로 켠다)_",
+            "",
+        ]
+
+    stages = lean.get("stages") or {}
+    columns = get(docs.get("columns"), "columns", default={}) or {}
+
+    slim_columns = stages.get("column_interpretation") or {}
+    if columns:
+        out += ["**컬럼 의미**", ""]
+        out += table(
+            ["컬럼", "전체 출력", "최소 출력", "최소: 모르는 것"],
+            [
+                (
+                    name,
+                    esc(meaning_of(get(entry, "final", "interpretation")), 60),
+                    esc((slim_columns.get(name) or {}).get("meaning"), 60),
+                    esc((slim_columns.get(name) or {}).get("unknown"), 40),
+                )
+                for name, entry in columns.items()
+            ],
+        )
+
+    slim_table = (stages.get("table_context") or {}).get("table") or {}
+    if slim_table:
+        out += ["**테이블 의미**", ""]
+        out += [
+            f"- 전체 출력: {esc(get(docs.get('table'), 'table_context', 'asset_context'))}",
+            f"- 최소 출력: {esc(slim_table.get('asset_context'))}",
+            f"- 최소 출력 행 단위: {esc(slim_table.get('row_grain'))}",
+            "",
+        ]
+
+    slim_relation = (stages.get("relation_analysis") or {}).get("table") or {}
+    revised = slim_relation.get("revised_columns") or {}
+    if revised:
+        out += ["**관계를 보고 바뀐 의미(최소 출력)**", ""]
+        out += table(["컬럼", "바뀐 의미"], [(k, esc(v, 80)) for k, v in revised.items()])
+
+    slim_validation = stages.get("semantic_validation") or {}
+    wrong = [
+        (group, w)
+        for group, value in slim_validation.items()
+        for w in ((value or {}).get("wrong_meanings") or [])
+    ]
+    if wrong:
+        out += ["**최소 출력이 지적한 어긋남**", ""]
+        out += table(
+            ["단위", "컬럼", "이유"],
+            [(group, w.get("columns"), esc(w.get("why"), 70)) for group, w in wrong],
+        )
+
+    failed = [e for e in lean.get("entries") or [] if e.get("error")]
+    if failed:
+        out += [
+            f"최소 출력 호출 {len(failed)}건이 실패했다(본 실행에는 영향 없음): "
+            + ", ".join(f"{e.get('stage')}/{e.get('target')}" for e in failed[:5]),
+            "",
+        ]
+
+    calls = get(docs.get("llm_calls"), "calls", default=[]) or []
+    slim_calls = [c for c in calls if str(c.get("prompt_ref") or "").startswith("lean_")]
+    if slim_calls:
+        slim_tokens = sum(c.get("tokens") or 0 for c in slim_calls)
+        full_tokens = sum(c.get("tokens") or 0 for c in calls) - slim_tokens
+        out += [
+            f"비용: 최소 출력 호출 {len(slim_calls)}회 / 전체 {len(calls)}회"
+            + (f", 토큰 {slim_tokens:,} vs {full_tokens:,}" if slim_tokens else ""),
             "",
         ]
     return out
@@ -705,6 +799,7 @@ def render(docs: Dict[str, Dict[str, Any]], title: str, include_calls: bool, det
     lines += section_validation(docs)
     lines += section_probes(docs)
     lines += section_plan(docs)
+    lines += section_lean(docs)
     lines += section_calls(docs, include_calls)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -736,7 +831,7 @@ def index_row(base: Path, docs: Dict[str, Dict[str, Any]], report: Path, root: P
 # --------------------------------------------------------------------- CLI
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="결과 문서 5벌을 Markdown 한 장으로 옮긴다")
+    ap = argparse.ArgumentParser(description="결과 문서 6벌을 Markdown 한 장으로 옮긴다")
     ap.add_argument("target", type=Path, help="결과 폴더 또는 기준 경로")
     ap.add_argument("-o", "--output", type=Path, help="출력 MD 경로 (기본: 결과 폴더의 report.md)")
     ap.add_argument(

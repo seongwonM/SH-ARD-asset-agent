@@ -15,17 +15,18 @@
 
 출력 경로는 두 가지 중 하나로 준다.
 
-    --output-root DIR   <DIR>_<모델명>/<csv이름>/ 아래에 결과 5개 + run.log
+    --output-root DIR   <DIR>/<모델명>/<csv이름>/ 아래에 결과 6개 + run.log
                         (배치용. 모델이 여럿이면 폴더가 모델 수만큼 생긴다)
-    --output PATH       PATH를 기준으로 결과 5개 (모델 하나일 때만)
+    --output PATH       PATH를 기준으로 결과 6개 (모델 하나일 때만)
 
-결과 파일은 다섯 개다.
+결과 파일은 여섯 개다.
 
     <base>.columns.json     컬럼별 해석이 단계마다 어떻게 바뀌었는지
     <base>.rulebase.json    룰베이스 계산값(프로파일/관계 증거/probe 실측)
     <base>.plan.json        계획과 실행 과정
     <base>.table.json       테이블 단위 산출물과 검증 라운드
     <base>.llm_calls.json   모든 LLM 호출의 입력/출력 원문
+    <base>.lean.json        --lean일 때만 채워지는 단계별 최소 출력(비교용)
 
 단계가 끝날 때마다 이 파일들을 덮어쓴다. 중간에 죽어도 그때까지의 결과는 남고,
 완주했는지는 각 파일의 `meta.status`가 done인지로 판별한다.
@@ -70,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-root",
         type=Path,
         default=None,
-        help="배치용 출력 루트. <루트>_<모델명>/<csv이름>/ 아래에 결과와 run.log를 쓴다",
+        help="배치용 출력 루트. <루트>/<모델명>/<csv이름>/ 아래에 결과와 run.log를 쓴다",
     )
     parser.add_argument(
         "--output",
@@ -81,7 +82,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-rounds", type=int, default=2, help="검증 실패 시 최대 재계획 라운드"
     )
+    parser.add_argument(
+        "--lean",
+        action="store_true",
+        default=_env_flag("LEAN_TRACK"),
+        help=(
+            "고정 단계마다 최소 출력을 한 번 더 받아 <base>.lean.json에 남긴다"
+            " (LLM 호출이 약 2배가 된다. 환경변수 LEAN_TRACK=1로도 켤 수 있다)"
+        ),
+    )
     return parser
+
+
+def _env_flag(name: str) -> bool:
+    """배치는 인자가 아니라 환경변수로 켠다 - Job yaml에서 인자를 고치는 것보다
+    env 한 줄이 낫고, 그 값은 secret/configmap과 같은 자리에 남는다."""
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_output(
@@ -89,12 +105,14 @@ def resolve_output(
 ) -> Path:
     """이 (CSV, 모델) 조합의 결과가 어디로 갈지 정한다.
 
-    폴더 이름에 모델을 넣는 쪽이 output_root다 - 같은 배치의 모델별 결과가
-    타임스탬프를 공유하면서 폴더로만 갈린다.
+    모델을 폴더 한 겹으로 넣는 쪽이 output_root다 - 같은 배치의 모델별 결과가
+    루트(타임스탬프, 배치라면 회차까지)를 공유하면서 그 아래에서만 갈린다.
+    접미사(`<루트>_<모델명>`)가 아니라 하위 폴더인 이유는, 루트에 회차 같은
+    단계를 더 붙여도 `<타임스탬프>/<회차>/<모델>/<csv>`처럼 계층이 그대로
+    유지되기 때문이다.
     """
     if output_root is not None:
-        root = Path(f"{output_root}_{safe_name(model)}")
-        return root / csv_path.stem / "result.semantic.json"
+        return output_root / safe_name(model) / csv_path.stem / "result.semantic.json"
     if output is not None:
         return output
     return csv_path.with_suffix(csv_path.suffix + ".semantic.json")
@@ -158,6 +176,7 @@ def _analyze(csv_path: Path, model: str, output: Path, args) -> bool:
             skill_dir=args.skills.resolve(),
             max_rounds=args.max_rounds,
             output=output,
+            lean=args.lean,
         )
     except Exception:  # noqa: BLE001 - 모델 하나가 죽어도 나머지는 돌린다
         traceback.print_exc()

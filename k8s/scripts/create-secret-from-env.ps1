@@ -53,6 +53,9 @@ $secretKeys = @(
     "LLM_MODEL",
     "LLM_REQUESTS_PER_MINUTE",
     "LLM_MAX_CONCURRENCY"
+    # 재시도/타임아웃(LLM_TIMEOUT_SECONDS 등)은 여기 넣지 않는다 - 비밀이 아니라
+    # 실험 설정이라, 그 실험을 띄운 Job yaml에 값이 보이는 편이 낫다.
+    # secret에 있으면 결과만 남았을 때 무슨 설정이었는지 레포에서 찾을 수 없다.
 )
 
 $literalArgs = @()

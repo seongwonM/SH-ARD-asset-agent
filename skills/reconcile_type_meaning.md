@@ -30,5 +30,11 @@ Return JSON only:
     "unit": null
   },
   "status": "resolved | ambiguous",
-  "note": "무엇이 충돌했고 어떻게 판단했는지"
+  "note": "무엇이 충돌했고 어떻게 판단했는지",
+  "domain_gap": null
 }
+
+`domain_gap` is how this column leaves the gap loop, so always include it. Set it to `null` if resolving the
+type/meaning conflict also settled what the column refers to. Keep it — rewritten to what is *still* missing —
+if the conflict is gone but the referent is not. Those are different axes and closing one does not close the
+other. Never drop a gap you have not actually closed.

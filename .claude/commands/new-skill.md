@@ -15,7 +15,7 @@ argument-hint: <name> [무엇을 판단하는가]
 
 | | 폴더 | 언제 도는가 | 이럴 때 고른다 |
 |---|---|---|---|
-| 보완 skill | `skills/` | column_review가 넘긴 컬럼에 gap_planner가 배정할 때만 | 컬럼마다 필요 여부가 다르다 |
+| 보완 skill | `skills/` | domain_gap이 남은 컬럼에 gap_planner가 배정할 때만 | 컬럼마다 필요 여부가 다르다 |
 | 고정 단계 | `prompts/` | 코드가 정한 순서대로 항상 | 무조건 나와야 하는 산출물이다 |
 
 **기본은 `skills/`다.** 고정 단계로 만들려면 "이 산출물이 모든 테이블에서 매번

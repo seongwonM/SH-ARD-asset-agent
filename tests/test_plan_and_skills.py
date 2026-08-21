@@ -13,6 +13,7 @@ from conftest import PROMPT_DIR, SKILL_DIR
 from column_semantics.adapters.prompts import FileSystemPrompts
 from column_semantics.pipeline.plan import (
     GAP_SKILLS,
+    LEAN_STAGES,
     REPLAN_STAGES,
     REQUIRED_PROMPTS,
     REQUIRED_SKILLS,
@@ -22,7 +23,6 @@ from column_semantics.pipeline.plan import (
     revision_steps,
     sanitize_gap_actions,
     sanitize_plan,
-    sanitize_review,
 )
 
 
@@ -54,39 +54,35 @@ def test_revision_keeps_declared_validation_once():
     assert [s["stage"] for s in steps] == ["relation_analysis", "semantic_validation"]
 
 
-def test_review_gate_decides_whether_the_planner_runs():
-    reviews = {
-        "a": {"verdict": "needs_work", "gap": "..."},
-        "b": {"verdict": "pass", "gap": ""},
+def test_domain_gap_gate_decides_whether_the_planner_runs():
+    """게이트는 필드 하나를 보는 규칙이다. 임계값도, 두 번째 판정 호출도 없다."""
+    interpretations = {
+        "a": {"status": "resolved", "domain_gap": {"missing": "어느 공정인지"}},
+        "b": {"status": "resolved", "domain_gap": None},
     }
-    assert flagged_columns(reviews) == ["a"]
-    assert flagged_columns({"b": {"verdict": "pass"}}) == []
+    assert flagged_columns(interpretations) == ["a"]
+    assert flagged_columns({"b": interpretations["b"]}) == []
 
 
-def test_malformed_review_counts_as_pass():
-    """형식을 못 맞춘 응답을 '더 보자'로 읽으면 프롬프트가 깨졌을 때 전부 넘어간다."""
-    assert sanitize_review({"verdict": "그런듯"})["verdict"] == "pass"
-    assert sanitize_review(None)["verdict"] == "pass"
-    assert sanitize_review({"verdict": "needs_work"})["verdict"] == "needs_work"
+def test_empty_gap_is_not_a_gap():
+    """프롬프트는 '없으면 null'이라고 하지만 모델은 빈 껍데기를 낸다. 그걸 gap으로
+    세면 아무것도 모른다는 보고 없이 컬럼이 planner로 넘어간다."""
+    assert flagged_columns({"a": {"domain_gap": {}}}) == []
+    assert flagged_columns({"a": {"domain_gap": ""}}) == []
+    assert flagged_columns({"a": "해석이 dict가 아님"}) == []
+    assert flagged_columns({"a": {}}) == []
 
 
-def test_unreadable_verdict_is_passed_but_recorded():
-    """모델이 형식을 못 맞추면 전 컬럼이 조용히 통과해 planner가 영영 안 돈다.
-    통과시키되 그 사실을 남겨야 원인을 프롬프트에서 찾는다."""
-    review = sanitize_review({"verdict": "더 봐야 함", "gap": "..."})
-    assert review["verdict"] == "pass"
-    assert "더 봐야 함" in review["malformed_verdict"]
-    # 제대로 온 응답에는 그 표시가 없다.
-    assert "malformed_verdict" not in sanitize_review({"verdict": "needs_work"})
-
-
-def test_review_reason_is_carried_through_untouched():
-    """근거는 검증하지 않는다 - 기록해두고 나중에 실제 값과 대조할 수 있게만 한다."""
-    review = sanitize_review(
-        {"verdict": "needs_work", "gap": "빈 값이 많다", "cites": [{"field": "없는필드", "value": 1}]}
-    )
-    assert review["gap"] == "빈 값이 많다"
-    assert review["cites"] == [{"field": "없는필드", "value": 1}]
+def test_gate_can_be_narrowed_to_columns_that_changed():
+    """2회차 이후에는 지난 라운드에 실제로 바뀐 컬럼만 다시 본다 - 손대지 않은
+    컬럼은 같은 값이라 판정도 같다."""
+    interpretations = {
+        "a": {"domain_gap": {"missing": "x"}},
+        "b": {"domain_gap": {"missing": "y"}},
+    }
+    assert flagged_columns(interpretations) == ["a", "b"]
+    assert flagged_columns(interpretations, candidates=["b"]) == ["b"]
+    assert flagged_columns(interpretations, candidates=[]) == []
 
 
 def test_actions_are_filtered_to_what_can_actually_run():
@@ -96,7 +92,7 @@ def test_actions_are_filtered_to_what_can_actually_run():
             {"action": "joint_interpretation", "columns": ["a", "b"]},
             {"action": "explain_sparsity", "columns": ["ghost"]},
             {"action": "semantic_type", "columns": ["a"]},          # 보완 skill이 아니다
-            {"action": "explain_sparsity", "columns": ["b"]},        # 검토가 안 넘긴 컬럼
+            {"action": "explain_sparsity", "columns": ["b"]},        # 게이트가 안 넘긴 컬럼
             {"action": "joint_interpretation", "columns": ["a"]},    # 그룹인데 하나
             {"action": "explain_sparsity", "columns": ["a", "b"]},   # 단일인데 여럿
             "garbage",
@@ -112,8 +108,8 @@ def test_actions_are_filtered_to_what_can_actually_run():
     assert all(d["why"] for d in dropped)
 
 
-def test_groups_may_include_a_column_that_passed_review():
-    """넘어온 컬럼이 하나라도 있으면 통과한 컬럼을 문맥으로 끼워도 된다."""
+def test_groups_may_include_a_column_with_no_gap():
+    """넘어온 컬럼이 하나라도 있으면 gap 없는 컬럼을 문맥으로 끼워도 된다."""
     kept, _ = sanitize_gap_actions(
         [{"action": "joint_interpretation", "columns": ["a", "settled"]}],
         flagged=["a"],
@@ -166,12 +162,8 @@ def test_gap_actions_tolerate_missing_field():
 
 
 def test_relation_analysis_only_when_pairwise_evidence_exists():
-    assert first_pass_stages(True) == [
-        "column_interpretation",
-        "column_review",
-        "relation_analysis",
-    ]
-    assert first_pass_stages(False) == ["column_interpretation", "column_review"]
+    assert first_pass_stages(True) == ["column_interpretation", "relation_analysis"]
+    assert first_pass_stages(False) == ["column_interpretation"]
 
 
 def test_each_folder_has_every_prompt_it_must_have():
@@ -199,13 +191,27 @@ def test_the_two_folders_do_not_overlap():
 
 
 def test_gap_skills_are_never_planned_as_stages():
-    """보완 skill은 재계획 스텝이 아니다 - 검토를 거쳐 배정될 때만 붙는다."""
+    """보완 skill은 재계획 스텝이 아니다 - 게이트를 거쳐 배정될 때만 붙는다."""
     assert not set(GAP_SKILLS) & set(STAGE_ORDER)
 
 
-def test_replan_cannot_pick_the_review_stage():
-    """검토는 보완 루프가 스스로 다시 도는 것이지, 검증 실패 때 되돌아갈 지점이 아니다."""
-    assert "column_review" in STAGE_ORDER
-    assert "column_review" not in REPLAN_STAGES
-    plan = sanitize_plan({"steps": [{"stage": "column_review"}, {"stage": "relation_analysis"}]})
+def test_replan_can_pick_any_fixed_stage():
+    """고정 단계는 전부 되돌아갈 수 있는 지점이다."""
+    assert REPLAN_STAGES == STAGE_ORDER
+    plan = sanitize_plan({"steps": [{"stage": "make_coffee"}, {"stage": "relation_analysis"}]})
     assert [s["stage"] for s in plan["steps"]] == ["relation_analysis"]
+
+
+def test_every_stage_has_a_lean_twin():
+    """'모든 단계에 하나씩'이 계약이다 - 단계를 추가하고 최소 출력을 빠뜨리면
+    그 단계만 비교 대상이 없어지고, 그건 파일이 없어질 때까지 티가 안 난다."""
+    assert set(LEAN_STAGES) == set(STAGE_ORDER)
+    assert set(LEAN_STAGES.values()) <= set(REQUIRED_PROMPTS)
+    # 최소 출력 프롬프트가 고정 단계 이름을 덮어쓰지 않아야 한다.
+    assert not set(LEAN_STAGES.values()) & set(STAGE_ORDER)
+
+
+def test_lean_prompts_exist_as_files():
+    library = FileSystemPrompts(PROMPT_DIR, required=list(LEAN_STAGES.values()))
+    for name in LEAN_STAGES.values():
+        assert library.prompt(name).strip()

@@ -1,15 +1,14 @@
 """실행 순서와 병렬화. 파일도 네트워크도 직접 만지지 않는다.
 
-입력은 DataFrame + StageRunner(어댑터가 주입된 것)뿐이고, 출력은 문서 5벌이다.
+입력은 DataFrame + StageRunner(어댑터가 주입된 것)뿐이고, 출력은 문서 6벌이다.
 파일로 쓰는 일조차 콜백(`on_checkpoint`)으로 빼서, 이 모듈은 "무엇을 어떤
 순서로 돌리는가"만 알게 했다 - 그래서 가짜 LLM 하나만 있으면 전 구간이
 테스트된다.
 
 구조:
 
-    1차 pass   column_interpretation(컬럼별 병렬, 타입+의미를 한 번에)
-               -> column_review(컬럼별 병렬)                          [고정 단계]
-    gap 보충   검토가 넘긴 컬럼이 있을 때만 gap_planner -> 배정 병렬 실행 [보완 skill]
+    1차 pass   column_interpretation(컬럼별 병렬, 타입+의미를 한 번에) [고정 단계]
+    gap 보충   domain_gap이 남은 컬럼이 있을 때만 gap_planner -> 배정 병렬 실행 [보완 skill]
     관계       relation_analysis(pairwise 증거 있을 때만)             [고정 단계]
     검증       관계 그룹별 semantic_validation 병렬 -> probe로 실측 대조 [고정 단계]
     마무리     table_context                                          [고정 단계]
@@ -19,10 +18,10 @@
 코드가 정한 순서다 - 무조건 만들어야 하는 산출물에 계획 호출을 넣으면 비용만
 늘고 재현성이 떨어진다.
 
-gap 보충은 판단이 둘로 갈린다. 컬럼별 검토가 "더 볼지"만 정하고(병렬), 넘어온
-컬럼들을 gap_planner가 한자리에서 보고 "무엇을 할지"를 정한다(단독). 여러 컬럼을
-묶어 보는 판단은 컬럼 하나만 보는 검토가 할 수 없어서 이렇게 나눴다. 넘어온
-컬럼이 없으면 planner를 아예 부르지 않는다.
+gap 보충은 판단이 둘로 갈린다. **누구를 볼지는 규칙이 정하고**(해석이 남긴
+`domain_gap` 유무), 넘어온 컬럼들을 gap_planner가 한자리에서 보고 "무엇을 할지"를
+정한다(단독 호출). 여러 컬럼을 묶어 보는 판단은 컬럼 하나만 보는 호출이 할 수
+없어서 뒤쪽만 LLM에 맡긴다. 넘어온 컬럼이 없으면 planner를 아예 부르지 않는다.
 
 단계를 지날 때마다 컬럼이 어떻게 바뀌었는지를 `ColumnHistory`에 남긴다. 결과
 dict는 최신 상태만 들고 있어서, 기록하지 않으면 "gap 보충이 무엇을 바꿨는지"가
@@ -66,7 +65,7 @@ class PipelineConfig:
     max_rounds: int = 2
     max_workers: int = 12
     source_name: str = ""
-    # 각 skill이 끝날 때마다 그때까지의 문서 5벌을 넘긴다. 중간에 죽어도 여기까지는 남는다.
+    # 각 skill이 끝날 때마다 그때까지의 문서 6벌을 넘긴다. 중간에 죽어도 여기까지는 남는다.
     on_checkpoint: Optional[Callable[[Documents], None]] = None
     # 모든 문서의 meta에 그대로 합쳐진다(입력 경로, skills 경로 등 실행 환경 정보).
     meta: Dict[str, Any] = field(default_factory=dict)
@@ -251,44 +250,13 @@ def validate_grouped(
     return validation
 
 
-def review_columns_parallel(
-    runner: StageRunner,
-    evidence: Dict[str, Any],
-    results: Dict[str, Any],
-    max_workers: int,
-    columns: List[str],
-    history: Optional[ColumnHistory] = None,
-    stage_info: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """컬럼별로 "더 볼지 말지"를 병렬로 묻는다. 해석과 같은 팬아웃 모양이다."""
-    print(f"[REVIEW] {len(columns)}개 컬럼 병렬 검토", flush=True)
-    outputs = _parallel(max_workers, columns, lambda col: runner.review_column(col, evidence, results))
-
-    reviews: Dict[str, Any] = {}
-    for i, col in enumerate(columns):
-        review = outputs[i]["review"]
-        reviews[col] = review
-        if history is not None:
-            history.record(col, "column_review", review, **(stage_info or {}))
-
-    malformed = [c for c, r in reviews.items() if r.get("malformed_verdict")]
-    if malformed:
-        print(
-            f"[REVIEW] 형식을 못 맞춘 응답 {len(malformed)}건 - 전부 pass로 처리됨: "
-            + ", ".join(malformed[:5])
-            + " (프롬프트/모델 확인 필요)",
-            flush=True,
-        )
-    return reviews
-
-
 def resolve_gaps(
     df: pd.DataFrame,
     runner: StageRunner,
     evidence: Dict[str, Any],
     results: Dict[str, Any],
     max_workers: int,
-    reviews: Dict[str, Any],
+    candidates: List[str],
     probe_log: List[Dict[str, Any]],
     joint_findings: List[Dict[str, Any]],
     history: Optional[ColumnHistory] = None,
@@ -296,33 +264,34 @@ def resolve_gaps(
     action_counts: Optional[Dict[str, int]] = None,
     done_actions: Optional[Set[Tuple[str, Tuple[str, ...]]]] = None,
 ) -> Dict[str, Any]:
-    """검토가 넘긴 컬럼에 대해 gap_planner가 정한 행동을 실행한다.
+    """domain_gap이 남은 컬럼에 대해 gap_planner가 정한 행동을 실행한다.
 
-    넘어온 컬럼이 없으면 planner를 부르지 않고 그대로 끝낸다 - planner가 도는
-    조건은 임계값이 아니라 검토 결과다.
+    게이트는 LLM 호출이 아니라 `domain_gap` 유무를 보는 규칙이다(`plan.py`).
+    넘어온 컬럼이 없으면 planner를 부르지 않고 그대로 끝낸다.
 
-    여기서 돌려주는 기록은 **계획에 관한 것만**이다. 컬럼별 검토 내용은 컬럼
-    이력에, 호출 원문은 llm_calls에, probe 실측은 probe_log에 각각 들어간다 -
+    여기서 돌려주는 기록은 **계획에 관한 것만**이다. 컬럼이 어떻게 바뀌었는지는
+    컬럼 이력에, 호출 원문은 llm_calls에, probe 실측은 probe_log에 각각 들어간다 -
     같은 값을 두 문서에 복사하지 않는다.
     """
-    flagged = flagged_columns(reviews)
+    interpretations = (results.get("column_interpretation") or {}).get("columns", {}) or {}
+    flagged = flagged_columns(interpretations, candidates)
     record: Dict[str, Any] = {
-        "reviewed": sorted(reviews),
+        # 무엇을 보고 무엇이 넘어갔는지. 게이트가 규칙이라 이 둘만 있으면 판정을
+        # 그대로 재현할 수 있다.
+        "gate": "domain_gap",
+        "considered": list(candidates),
         "flagged": flagged,
-        # 형식을 못 맞춰 pass로 떨어진 컬럼. 이게 많으면 "검토가 다 통과시켰다"가
-        # 아니라 "검토 응답을 못 읽었다"는 뜻이다 - 둘은 조치가 다르다.
-        "malformed_reviews": sorted(c for c, r in reviews.items() if r.get("malformed_verdict")),
         "planner": None,
         "actions": [],
         "dropped": [],
         "changed": [],
     }
     if not flagged:
-        print("[GAP] 검토를 통과하지 못한 컬럼 없음 - planner 호출 생략", flush=True)
+        print("[GAP] domain_gap이 남은 컬럼 없음 - planner 호출 생략", flush=True)
         return record
 
-    print(f"[GAP] 검토가 넘긴 컬럼 {len(flagged)}개: {', '.join(flagged)}", flush=True)
-    planned = runner.plan_gaps(flagged, reviews, evidence, results)
+    print(f"[GAP] domain_gap이 남은 컬럼 {len(flagged)}개: {', '.join(flagged)}", flush=True)
+    planned = runner.plan_gaps(flagged, evidence, results)
     actions, dropped = sanitize_gap_actions(
         planned.get("actions"),
         flagged,
@@ -379,17 +348,16 @@ def resolve_gaps(
             if not update or col not in columns:
                 continue
             before = dict(columns[col]) if isinstance(columns[col], dict) else columns[col]
-            for key in (
-                "selected_meaning",
-                "status",
-                "sparsity_reason",
-                "note",
-                "evidence",
-                "domain_gap",
-            ):
+            for key in ("selected_meaning", "status", "sparsity_reason", "note", "evidence"):
                 # None은 "이번엔 안 바꿈"이라는 뜻이라 - 있는 값을 null로 지워버리면 안 된다.
                 if update.get(key) is not None:
                     columns[col][key] = update[key]
+            # domain_gap만은 키가 있으면 null이라도 그대로 반영한다. 이 필드가 곧
+            # 보완 게이트라, 지울 방법이 없으면 한 번 걸린 컬럼은 라운드마다 다시
+            # 걸리고 planner 호출만 늘어난다. 보완이 실제로 대상을 밝혔다는 보고는
+            # "이제 없다"로만 할 수 있다.
+            if "domain_gap" in update:
+                columns[col]["domain_gap"] = update["domain_gap"]
             columns[col].setdefault("gap_history", []).append(
                 {"skill": action["action"], "reason": action.get("reason", "")}
             )
@@ -552,6 +520,9 @@ def run_pipeline(
                 "max_gap_rounds": MAX_GAP_ROUNDS,
                 "max_actions_per_column": MAX_ACTIONS_PER_COLUMN,
                 "max_group_columns": MAX_GROUP_COLUMNS,
+                # 최소 출력을 같이 받았는지. 호출 수가 두 배로 달라지므로 결과를
+                # 비교할 때 반드시 봐야 하는 조건이다.
+                "lean_track": runner.lean is not None,
                 "status": status,
                 "validation_status": validation_status,
                 "started_at": run_started_at,
@@ -567,6 +538,7 @@ def run_pipeline(
             joint_findings=joint_findings,
             timeline_events=timeline.events(),
             llm_log=llm_log,
+            lean=runner.lean,
         )
 
     last_checkpoint = [0.0]
@@ -575,7 +547,7 @@ def run_pipeline(
         """진행 상황을 파일로 내보낸다.
 
         min_interval을 주면 그 간격 안에서는 건너뛴다 - 컬럼이 끝날 때마다 문서
-        5벌을 다시 쓰면 컬럼 수만큼 PVC I/O가 늘어난다. 단계 경계에서는 항상
+        6벌을 다시 쓰면 컬럼 수만큼 PVC I/O가 늘어난다. 단계 경계에서는 항상
         쓰고(min_interval=0), 긴 단계 도중에는 드문드문 쓴다.
         """
         if config.on_checkpoint is None:
@@ -703,21 +675,8 @@ def run_pipeline(
         action_counts: Dict[str, int] = {}
         done_actions: Set[Tuple[str, Tuple[str, ...]]] = set()
 
-        def gap_round(round_no: int, columns_to_review: List[str]) -> Dict[str, Any]:
-            """검토 -> (넘어온 게 있으면) planner -> 실행. 한 라운드가 여기 전부다."""
-            with timeline.measure(event="stage", phase="exec", stage="column_review", round=round_no):
-                with runner.stage(stage="gap", round=round_no, phase="exec"):
-                    reviews = review_columns_parallel(
-                        runner,
-                        evidence,
-                        results,
-                        max_workers,
-                        columns=columns_to_review,
-                        history=history,
-                        stage_info=_stage_info("exec", round_no),
-                    )
-            checkpoint()
-
+        def gap_round(round_no: int, candidates: List[str]) -> Dict[str, Any]:
+            """게이트 -> (넘어온 게 있으면) planner -> 실행. 한 라운드가 여기 전부다."""
             with timeline.measure(event="gap_resolution", round=round_no) as entry:
                 with runner.stage(stage="gap", round=round_no, phase="exec"):
                     record = resolve_gaps(
@@ -726,7 +685,7 @@ def run_pipeline(
                         evidence,
                         results,
                         max_workers,
-                        reviews=reviews,
+                        candidates=candidates,
                         probe_log=probe_log,
                         joint_findings=joint_findings,
                         history=history,
@@ -734,6 +693,7 @@ def run_pipeline(
                         action_counts=action_counts,
                         done_actions=done_actions,
                     )
+                entry["considered"] = len(record["considered"])
                 entry["flagged"] = len(record["flagged"])
                 entry["actions"] = len(record["actions"])
             record["round"] = round_no
@@ -744,13 +704,13 @@ def run_pipeline(
         with runner.stage(stage="first_pass", round=1):
             exec_columns(phase="exec", columns=all_columns)
 
-        # -- 검토 -> gap 보충 -------------------------------------------------
+        # -- gap 보충 ---------------------------------------------------------
         # 보완이 컬럼 해석을 바꾸므로 relation_analysis보다 먼저 돈다 - 관계 분석이
         # 바뀌기 전 해석을 근거로 삼으면 그만큼 낡은 판단이 된다.
         touched = gap_round(1, all_columns)
         for round_no in range(2, MAX_GAP_ROUNDS + 1):
-            # 다시 검토하는 것은 이번 라운드에 실제로 바뀐 컬럼뿐이다. 손대지 않은
-            # 컬럼을 다시 물으면 같은 입력에 같은 답이고, 호출만 는다.
+            # 다시 판정하는 것은 이번 라운드에 실제로 바뀐 컬럼뿐이다. 손대지 않은
+            # 컬럼은 domain_gap도 그대로라 결과가 같다.
             if not touched["changed"]:
                 break
             touched = gap_round(round_no, touched["changed"])

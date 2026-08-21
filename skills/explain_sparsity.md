@@ -26,5 +26,11 @@ Return JSON only:
 {
   "sparsity_reason": "...",
   "status": "resolved | ambiguous",
-  "selected_meaning": null
+  "selected_meaning": null,
+  "domain_gap": null
 }
+
+`domain_gap` is how this column leaves the gap loop, so always include it. Explaining *why* a column is empty
+rarely identifies what it holds — if the referent is still unknown, keep the gap and say what is missing. Set it
+to `null` only when the sparsity explanation itself settled what the column is. Never drop a gap you have not
+actually closed.

@@ -10,18 +10,19 @@ from fakes import FakeLLM
 
 from column_semantics.adapters.prompts import InMemoryPrompts
 from column_semantics.core.evidence import build_table_evidence
+from column_semantics.core.lean_track import LeanTrack
 from column_semantics.pipeline.documents import PARTS
 from column_semantics.pipeline.orchestrator import PipelineConfig, run_pipeline
 from column_semantics.pipeline.plan import REQUIRED_PROMPTS, REQUIRED_SKILLS
 from column_semantics.pipeline.stage_runner import StageRunner
 
 
-def make_runner(llm: FakeLLM) -> StageRunner:
+def make_runner(llm: FakeLLM, lean=None) -> StageRunner:
     def library(names):
         return InMemoryPrompts({name: f"# {name} 프롬프트" for name in names})
 
     return StageRunner(
-        stages=library(REQUIRED_PROMPTS), skills=library(REQUIRED_SKILLS), llm=llm
+        stages=library(REQUIRED_PROMPTS), skills=library(REQUIRED_SKILLS), llm=llm, lean=lean
     )
 
 
@@ -37,7 +38,7 @@ def run_result(equipment_df):
 
 
 def test_document_set_is_stable(run_result):
-    """문서 5벌과 각 문서의 최상위 블록은 계약이다 - 배치 로그 수집과 결과 분석이
+    """문서 6벌과 각 문서의 최상위 블록은 계약이다 - 배치 로그 수집과 결과 분석이
     이 구조를 본다."""
     _, docs = run_result
     assert set(docs) == set(PARTS)
@@ -59,6 +60,10 @@ def test_document_set_is_stable(run_result):
         "validation",
     }
     assert set(docs["llm_calls"]) == {"meta", "prompts", "calls"}
+    assert set(docs["lean"]) == {"meta", "enabled", "stages", "entries"}
+    # 켜지 않은 실행에서도 파일 집합은 그대로다 - 6개 중 하나가 비어 있는 것과
+    # 아예 없는 것은 다른 사실이고, 분석 쪽이 그 차이를 봐야 한다.
+    assert docs["lean"]["enabled"] is False
 
     for part, doc in docs.items():
         assert doc["meta"]["part"] == part
@@ -79,7 +84,8 @@ def test_first_pass_runs_in_fixed_order(run_result):
     interp = [x for x in labels if x.startswith("column_interpretation:")]
     assert len(interp) >= 6
     assert labels[0].startswith("column_interpretation:")
-    assert labels.index("gap_planner") > labels.index("column_review:run_id")
+    # 보완 계획은 모든 컬럼 해석이 끝난 뒤에만 설 수 있다(게이트가 그 결과를 본다).
+    assert labels.index("gap_planner") > labels.index("column_interpretation:status_code")
 
 
 def test_column_payload_is_scoped_to_that_column(run_result):
@@ -107,7 +113,6 @@ def test_call_records_say_whether_it_was_a_fixed_stage_or_a_supplement(run_resul
     llm, _ = run_result
     kind = {c["label"]: c["context"]["kind"] for c in llm.calls}
     assert kind["column_interpretation:power_value"] == "stage"
-    assert kind["column_review:power_value"] == "stage"
     assert kind["table_context"] == "stage"
     assert kind["reconsider_ambiguous:power_value"] == "skill"
     # 계획 호출은 산출물이 아니라 실행 결정이라 둘 중 어느 쪽도 아니다.
@@ -150,7 +155,7 @@ def test_column_stages_keep_what_each_step_changed(equipment_df):
     )
     stages = docs["columns"]["columns"]["power_value"]["stages"]
     kinds = [s["stage"] for s in stages]
-    assert kinds[:2] == ["column_interpretation", "column_review"]
+    assert kinds[0] == "column_interpretation"
     assert "gap" in kinds
 
     # 1차 해석 단계는 gap이 덮어쓰기 전 값을 그대로 들고 있어야 한다.
@@ -169,44 +174,43 @@ def test_column_stages_keep_what_each_step_changed(equipment_df):
     assert "gap" not in [s["stage"] for s in docs["columns"]["columns"]["run_id"]["stages"]]
 
 
-def test_review_decides_which_columns_reach_the_planner(run_result):
-    """planner가 도는 조건은 임계값이 아니라 검토 결과다."""
+def test_domain_gap_alone_decides_which_columns_reach_the_planner(run_result):
+    """게이트는 LLM 호출이 아니라 필드 하나를 보는 규칙이다 - domain_gap이 남은
+    컬럼만 넘어간다. 임계값도, 두 번째 판정 호출도 없다."""
     llm, docs = run_result
     round1 = docs["plan"]["gap_rounds"][0]
-
-    # 계획 문서에는 게이트 결과만 남는다: 누구를 검토했고 누가 넘어갔는지.
-    assert len(round1["reviewed"]) == 6
-    assert round1["flagged"] == ["power_value"]
-    assert "gap_planner" in llm.labels()
-
-
-def test_each_review_verdict_is_kept_in_that_column_history(run_result):
-    """판정은 컬럼이 지나온 단계다 - 컬럼 문서가 그걸 들고, 계획 문서는 안 베낀다."""
-    _, docs = run_result
     columns = docs["columns"]["columns"]
 
-    flagged = next(
-        s for s in columns["power_value"]["stages"] if s["stage"] == "column_review"
-    )
-    assert flagged["value"]["verdict"] == "needs_work"
-    assert flagged["value"]["gap"]  # 근거는 검증 없이 그대로 남는다
-    assert flagged["value"]["cites"]
+    assert round1["gate"] == "domain_gap"
+    assert len(round1["considered"]) == 6
+    assert round1["flagged"] == ["power_value", "status_code"]
+    assert "gap_planner" in llm.labels()
 
-    passed = next(s for s in columns["run_id"]["stages"] if s["stage"] == "column_review")
-    assert passed["value"]["verdict"] == "pass"
+    # 넘어간 컬럼과 안 넘어간 컬럼의 차이는 그 필드 하나뿐이고, 컬럼 문서만 보고
+    # 판정을 그대로 재현할 수 있어야 한다. 단 **1차 해석 시점의 값**으로 봐야 한다 -
+    # 뒤의 보완/수정 라운드가 같은 자리를 덮어쓰므로 final은 그때의 근거가 아니다.
+    def first_pass(col):
+        return next(
+            s["value"] for s in columns[col]["stages"] if s["stage"] == "column_interpretation"
+        )
 
-    # 같은 내용이 계획 문서에 복사돼 있지 않아야 한다.
-    assert "reviews" not in docs["plan"]["gap_rounds"][0]
+    for col in round1["flagged"]:
+        assert first_pass(col)["domain_gap"]
+    assert first_pass("run_id")["domain_gap"] is None
+
+    # 컬럼별 검토 호출은 더 이상 없다.
+    assert not any(x.startswith("column_review") for x in llm.labels())
 
 
 def test_planner_is_not_called_when_nothing_is_flagged(equipment_df):
     """근거 없이 부르는 호출을 없앤다 - 넘어온 컬럼이 없으면 계획할 것도 없다."""
 
-    class AllPass(FakeLLM):
-        def _on_column_review(self, label, payload):
-            return {"verdict": "pass", "gap": "", "cites": []}
+    class NothingUnknown(FakeLLM):
+        def _on_column_interpretation(self, label, payload):
+            out = super()._on_column_interpretation(label, payload)
+            return {**out, "status": "resolved", "domain_gap": None}
 
-    llm = AllPass(refute_first_validation=False)
+    llm = NothingUnknown(refute_first_validation=False)
     docs = run_pipeline(
         equipment_df, make_runner(llm), config=PipelineConfig(max_rounds=1, max_workers=4)
     )
@@ -225,19 +229,19 @@ def test_unexecutable_actions_are_dropped_with_a_reason(run_result):
     assert len(dropped) == 4
     assert "없는 컬럼" in whys
     assert "모르는 행동" in whys
-    assert "검토가 넘긴 컬럼이 대상에 없음" in whys
+    assert "게이트가 넘긴 컬럼이 대상에 없음" in whys
     assert "여러 컬럼을 보는 행동인데 컬럼이 하나" in whys
 
 
 def test_joint_interpretation_updates_every_column_in_the_group(equipment_df):
-    """여러 컬럼을 묶는 판단은 컬럼 하나만 보는 검토가 할 수 없어서 planner 몫이다."""
+    """여러 컬럼을 묶는 판단은 컬럼 하나만 보는 호출이 할 수 없어서 planner 몫이다."""
 
     class Grouping(FakeLLM):
-        def _on_column_review(self, label, payload):
-            column = payload["target_column"]
-            if column in {"power_value", "power_limit"}:
-                return {"verdict": "needs_work", "gap": "짝이 있어 보인다", "cites": []}
-            return {"verdict": "pass", "gap": "", "cites": []}
+        def _on_column_interpretation(self, label, payload):
+            out = super()._on_column_interpretation(label, payload)
+            if payload["target_column"] in {"power_value", "power_limit"}:
+                return {**out, "domain_gap": {"missing": "짝이 있어 보인다"}}
+            return {**out, "domain_gap": None}
 
         def _on_gap_planner(self, label, payload):
             return {
@@ -277,10 +281,11 @@ def test_a_group_relationship_that_is_testable_gets_measured(equipment_df):
     """검사 가능한 주장은 데이터에 대고 본다 - 보완 단계라고 달라지지 않는다."""
 
     class Grouping(FakeLLM):
-        def _on_column_review(self, label, payload):
+        def _on_column_interpretation(self, label, payload):
+            out = super()._on_column_interpretation(label, payload)
             if payload["target_column"] in {"power_value", "power_limit"}:
-                return {"verdict": "needs_work", "gap": "짝이 있어 보인다", "cites": []}
-            return {"verdict": "pass", "gap": "", "cites": []}
+                return {**out, "domain_gap": {"missing": "짝이 있어 보인다"}}
+            return {**out, "domain_gap": None}
 
         def _on_gap_planner(self, label, payload):
             return {
@@ -329,8 +334,9 @@ def test_second_gap_round_only_revisits_columns_that_changed(run_result):
     rounds = docs["plan"]["gap_rounds"]
     assert [r["round"] for r in rounds] == [1, 2]
     assert rounds[0]["changed"] == ["power_value"]
-    assert rounds[1]["reviewed"] == ["power_value"]
-    # 2라운드 검토에서 통과하면 planner를 다시 부르지 않는다.
+    assert rounds[1]["considered"] == ["power_value"]
+    # 보완이 gap을 닫았으면 2라운드에서는 넘어갈 컬럼이 없고, planner도 안 돈다.
+    assert rounds[1]["flagged"] == []
     assert rounds[1]["planner"] is None
 
 
@@ -467,12 +473,12 @@ def test_execution_trace_covers_every_skill(run_result):
     _, docs = run_result
     execution = docs["plan"]["execution"]
     stages = {e["stage"] for e in execution if e.get("event") == "stage"}
-    assert {"column_interpretation", "column_review", "semantic_validation", "table_context"} <= stages
+    assert {"column_interpretation", "semantic_validation", "table_context"} <= stages
     assert all("elapsed_seconds" in e for e in execution)
     # 1차 고정 순서와 gap 라운드도 계획 문서 안에 있다.
     assert docs["plan"]["first_pass"]["stages"][0] == "column_interpretation"
     first_round = docs["plan"]["gap_rounds"][0]
-    assert first_round["flagged"] == ["power_value"]
+    assert first_round["flagged"] == ["power_value", "status_code"]
     assert [a["action"] for a in first_round["actions"]] == ["reconsider_ambiguous"]
     assert len(first_round["planner"]["raw"]["actions"]) == 5  # 정제 전 원본
 
@@ -542,6 +548,69 @@ def test_columns_land_in_the_results_as_they_finish(equipment_df):
     # 뒤로 갈수록 채워진다 - 마지막 컬럼이 도는 시점엔 앞의 것들이 이미 들어 있다.
     assert seen == sorted(seen)
     assert seen[-1] >= 1
+
+
+def test_lean_track_asks_the_same_question_with_a_smaller_answer(equipment_df):
+    """최소 출력은 **같은 payload로 따로 부른다** - 입력이 달라지면 비교가 아니라
+    다른 실험이 되고, 한 호출에 둘 다 내게 하면 긴 답이 짧은 답을 끌고 간다."""
+    llm = FakeLLM(refute_first_validation=False)
+    lean = LeanTrack()
+    docs = run_pipeline(
+        equipment_df,
+        make_runner(llm, lean=lean),
+        config=PipelineConfig(max_rounds=1, max_workers=4),
+    )
+    labels = llm.labels()
+
+    # 고정 단계마다 짝이 하나씩 붙는다.
+    assert "lean_column_interpretation:power_value" in labels
+    assert "lean_table_context:table" in labels
+    assert any(x.startswith("lean_semantic_validation:") for x in labels)
+
+    # 입력은 글자 하나까지 같아야 한다.
+    assert llm.payload_for("column_interpretation:power_value") == llm.payload_for(
+        "lean_column_interpretation:power_value"
+    )
+
+    stages = docs["lean"]["stages"]
+    assert docs["lean"]["enabled"] is True
+    assert stages["column_interpretation"]["power_value"]["meaning"] == "power_value의 의미(최소)"
+    assert stages["table_context"]["table"]["asset_context"]
+
+
+def test_lean_output_never_leaks_into_the_pipeline(equipment_df):
+    """읽는 순간 '최소 출력으로 돌린 파이프라인'이 되어 비교 대상이 사라진다."""
+    llm = FakeLLM(refute_first_validation=False)
+    docs = run_pipeline(
+        equipment_df,
+        make_runner(llm, lean=LeanTrack()),
+        config=PipelineConfig(max_rounds=1, max_workers=4),
+    )
+
+    # 가짜 최소 출력은 일부러 "(최소)"라고 써 둔다 - 다른 문서 어디에도 없어야 한다.
+    for part in ("columns", "table", "plan", "rulebase"):
+        assert "(최소)" not in json.dumps(docs[part], ensure_ascii=False)
+    assert "(최소)" in json.dumps(docs["lean"], ensure_ascii=False)
+
+
+def test_a_failing_lean_call_does_not_take_the_run_down(equipment_df):
+    """이건 측정이지 산출물이 아니다. 측정 때문에 본 실행이 무너지면 앞뒤가 바뀐다."""
+
+    class LeanExplodes(FakeLLM):
+        def _on_lean_table_context(self, label, payload):
+            raise RuntimeError("최소 출력 실패")
+
+    docs = run_pipeline(
+        equipment_df,
+        make_runner(LeanExplodes(refute_first_validation=False), lean=LeanTrack()),
+        config=PipelineConfig(max_rounds=1, max_workers=4),
+    )
+
+    assert docs["table"]["table_context"], "본 단계는 그대로 나와야 한다"
+    assert docs["columns"]["meta"]["status"] == "done"
+    failed = [e for e in docs["lean"]["entries"] if e["error"]]
+    assert failed and "최소 출력 실패" in failed[0]["error"]
+    assert failed[0]["stage"] == "table_context"
 
 
 def test_checkpoint_is_written_as_each_skill_finishes(equipment_df):

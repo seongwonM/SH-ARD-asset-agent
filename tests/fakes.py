@@ -99,9 +99,19 @@ class FakeLLM:
         typed = {"semantic_type": {"type": "identifier", "confidence": 0.6}}
         if payload.get("revision_feedback") is not None:
             return {**typed, "status": "resolved", "selected_meaning": f"{column}의 의미(재해석)"}
-        # power_value만 애매하게 두어 gap skill이 붙는 경로를 만든다.
+        # power_value만 애매하게 두어 gap skill이 붙는 경로를 만든다. 보완으로
+        # 넘어가는 조건은 domain_gap 유무 하나라, 그것도 같이 남긴다.
         if column == "power_value":
-            return {**typed, "status": "ambiguous", "candidates": ["출력", "소비전력"]}
+            return {
+                **typed,
+                "status": "ambiguous",
+                "candidates": ["출력", "소비전력"],
+                "domain_gap": {
+                    "missing": "출력인지 소비전력인지",
+                    "why": "이름과 값 범위만으로는 어느 쪽인지 정해지지 않는다",
+                    "would_resolve": ["설비 사양서"],
+                },
+            }
         # status는 resolved인데 도메인은 못 밝힌 컬럼. 두 축이 별개라는 걸 보여준다.
         if column == "status_code":
             return {
@@ -128,17 +138,6 @@ class FakeLLM:
             "groups": [{"columns": ["power_value", "power_limit"], "kind": "measure_limit"}],
         }
 
-    def _on_column_review(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """power_value만 넘기고 나머지는 통과시킨다 - 대부분 pass가 정상이다."""
-        column = payload["target_column"]
-        if column == "power_value" and payload["interpretation"].get("status") == "ambiguous":
-            return {
-                "verdict": "needs_work",
-                "gap": "후보가 둘이고, power_limit과 강하게 같이 움직인다",
-                "cites": [{"field": "pairwise.pearson_corr", "value": 0.0}],
-            }
-        return {"verdict": "pass", "gap": "", "cites": []}
-
     def _on_gap_planner(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "actions": [
@@ -151,14 +150,16 @@ class FakeLLM:
                 # 아래는 전부 정제 단계에서 버려져야 한다.
                 {"action": "reconsider_ambiguous", "columns": ["없는컬럼"], "reason": "x"},
                 {"action": "존재하지_않는_skill", "columns": ["run_id"], "reason": "x"},
-                {"action": "explain_sparsity", "columns": ["run_id"], "reason": "검토가 안 넘긴 컬럼"},
+                {"action": "explain_sparsity", "columns": ["run_id"], "reason": "게이트가 안 넘긴 컬럼"},
                 {"action": "joint_interpretation", "columns": ["power_value"], "reason": "혼자 묶기"},
             ],
             "skipped": [],
         }
 
     def _on_reconsider_ambiguous(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return {"status": "resolved", "selected_meaning": "설비 출력값(W)"}
+        # domain_gap을 명시적으로 null로 닫는다. 이게 안 되면 한 번 걸린 컬럼이
+        # 라운드마다 다시 걸린다.
+        return {"status": "resolved", "selected_meaning": "설비 출력값(W)", "domain_gap": None}
 
     def _on_joint_interpretation(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -213,3 +214,24 @@ class FakeLLM:
             "table_summary": "설비 실행 로그",
             "grain": "run_id 1건 = 실행 1회",
         }
+
+    # -- 단계별 최소 출력 -------------------------------------------------
+    # 같은 payload를 받아 최소 필드만 낸다. 파이프라인이 이 값을 절대 읽지 않는
+    # 것까지가 계약이라, 여기 응답은 본 단계의 응답과 일부러 다르게 써 둔다 -
+    # 어딘가에서 새어 들어오면 결과가 눈에 띄게 어긋난다.
+
+    def _on_lean_column_interpretation(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "meaning": f"{payload['target_column']}의 의미(최소)",
+            "unit": None,
+            "unknown": None,
+        }
+
+    def _on_lean_relation_analysis(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {"revised_columns": {}}
+
+    def _on_lean_semantic_validation(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {"wrong_meanings": []}
+
+    def _on_lean_table_context(self, label: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {"asset_context": "설비 실행 로그(최소)", "row_grain": "실행 1회"}

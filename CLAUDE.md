@@ -57,8 +57,9 @@ probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **
 
 | | 폴더 | 실행 결정 | 예 |
 |---|---|---|---|
-| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | column_interpretation, column_review, relation_analysis, semantic_validation, table_context |
-| 보완 skill | `skills/` | `column_review` → `gap_planner`를 거쳐 배정 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning, joint_interpretation |
+| 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | column_interpretation, relation_analysis, semantic_validation, table_context |
+| 보완 skill | `skills/` | domain_gap 게이트 → `gap_planner`를 거쳐 배정 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning, joint_interpretation |
+| 최소 출력 | `prompts/lean_*.md` | 고정 단계마다 짝으로. `--lean`일 때만 | 각 단계의 `lean_*` |
 
 **항상 나와야 하는 산출물을 skill로 만들지 말 것.** 컬럼 해석과 테이블 맥락은
 무조건 만들어야 하니 "돌릴지 말지"를 물을 여지가 없다 - 물어보는 순간 비용과
@@ -74,30 +75,41 @@ gap_planner에게 맡긴 지점이다.
 컬럼이 늘수록 무관한 정보가 판단을 흐리고 토큰만 커진다. 그룹 단위는
 그 그룹에 속한 컬럼의 증거만 본다.
 
-### 보완은 두 단계로 판단한다
+### 보완은 두 단계로 판단하되, 앞쪽은 규칙이다
 
-`column_review`(컬럼별 병렬)가 **"더 볼지 말지"만** 정하고, `gap_planner`(단독)가
+**누구를 볼지는 코드가 정하고**(해석이 남긴 `domain_gap` 유무), `gap_planner`(단독)가
 넘어온 컬럼들을 한자리에서 보고 **"무엇을 할지"**를 정한다. 이 순서를 합치지 말 것.
 
-- 검토에 skill 이름을 고르게 하면 안 된다. 컬럼 하나만 보고서는 "이 둘을 같이
+- 게이트에 LLM을 두지 말 것. 예전에는 `column_review`가 컬럼마다 "더 볼까"를
+  물었는데, 물어볼 근거는 해석이 이미 `domain_gap`에 적어둔 것과 같았다 — 같은
+  모델에게 같은 재료로 두 번 묻고 두 번째 답을 제어 흐름에 쓰는 구조였다.
+  판정이 흔들리고(형식을 못 맞추면 전부 pass) 컬럼 수만큼 호출이 늘었다.
+- 게이트에 skill 이름을 고르게 하면 안 된다. 컬럼 하나만 보고서는 "이 둘을 같이
   봐야 한다"를 알 수 없다 — 그 판단이 가능한 곳은 넘어온 컬럼을 함께 보는
   planner 뿐이고, `joint_interpretation`이 거기서만 나오는 이유다.
-- **planner가 도는 조건은 검토 결과다.** `needs_work`가 0이면 호출하지 않는다.
+- **planner가 도는 조건은 게이트 결과다.** 넘어온 컬럼이 0이면 호출하지 않는다.
   임계값으로 게이트를 만들지 말 것.
+- **보완은 gap을 닫을 수 있어야 한다.** skill이 `domain_gap: null`을 내면 그대로
+  반영된다(다른 필드와 달리 null도 값으로 본다). 닫을 방법이 없으면 한 번 걸린
+  컬럼이 라운드마다 다시 걸리고 planner 호출만 는다.
+
+게이트를 넓히고 싶어지면 게이트가 아니라 `column_interpretation`을 고칠 것.
+"타입과 의미가 어긋난다"도 결국 그 컬럼을 아직 모른다는 뜻이고, 그걸 domain_gap에
+적게 하는 편이 판단 지점을 하나로 유지한다.
 
 ### 정제는 실행 가능성만 본다
 
 `sanitize_gap_actions`가 거르는 것은 없는 컬럼, 모르는 행동, 중복, 예산뿐이다.
 **근거가 충분한지는 판정하지 않는다** — 그걸 코드가 하려면 semantic_type마다
 임계값을 정해야 하고, 그건 LLM이 이미 아는 상식을 실험으로 다시 알아내는 일이다.
-검토와 planner가 적은 `cites`/`reason`은 검증 없이 `plan.json`에 그대로 싣는다
+planner가 적은 `cites`/`reason`은 검증 없이 `plan.json`에 그대로 싣는다
 (나중에 실제 값과 대조할 수 있게). 버린 행동도 이유와 함께 남긴다 — planner가
 무엇을 하려 했는지가 사라지면 프롬프트를 고칠 근거도 사라진다.
 
 ## 작업 시 주의
 
 ### 병렬 실행
-컬럼별(`column_interpretation`, `column_review`, 보완 skill)과 관계 그룹별
+컬럼별(`column_interpretation`, 보완 skill)과 관계 그룹별
 (`semantic_validation`)만
 병렬로 돈다. 테이블 단위 고정 단계(`relation_analysis`, `table_context`)는
 항상 단독 실행한다 — 같은 결과 슬롯에 둘이 동시에 쓰면
@@ -147,6 +159,14 @@ payload는 그 자체가 단일 실패 지점이다.
 (`max_rounds`, `max_gap_rounds`, `max_actions_per_column`, `max_group_columns`).
 없으면 결과 두 개를 비교할 때 설정이 바뀐 건지 모델이 다르게 답한 건지 가릴 수 없다.
 
+재시도·타임아웃(`meta.llm_call`)도 같은 이유로 남긴다 - 끝까지 돌았는지가
+그 값으로 갈린다. **재시도 정책은 어댑터가 갖는다**(`LLM_MAX_RETRIES` /
+`LLM_RETRY_BACKOFF_SECONDS` / `LLM_TIMEOUT_SECONDS` / `LLM_HTTP_RETRIES`).
+파이프라인이 단계마다 `max_retries`를 따로 넘기기 시작하면 "이 실행이 몇 번까지
+버텼는가"를 한 곳에서 말할 수 없게 된다 - 넘기지 말 것. 오래 도는 배치에서는
+백오프가 슬롯을 놓은 뒤에 쉬어야 한다는 점도 지킬 것(붙들고 자면 멀쩡한 다른
+컬럼 호출이 그만큼 막힌다).
+
 ### 보완 루프에 예산을 지키기
 `MAX_GAP_ROUNDS` / `MAX_ACTIONS_PER_COLUMN` / `MAX_GROUP_COLUMNS`는 `plan.py`
 한곳에 있다. 라운드를 늘리면 토큰은 확실히 늘지만 해석이 나아진다는 보장은
@@ -159,21 +179,30 @@ payload는 그 자체가 단일 실패 지점이다.
 `deploy/Dockerfile`의 COPY 목록이 같이 어긋난다. 셋 다 확인할 것.
 
 `LLM_MODEL`은 쉼표로 여러 모델을 받고, **모델을 도는 것도 결과 폴더 규칙도
-CLI(`cli.py`)가 한다.** Job의 셸은 CSV를 순회하며 CLI를 부르는 일만 한다 -
-셸에 로직이 쌓이면 테스트할 수가 없다. 실행 하나는 항상 모델 하나이고 결과는
-`<타임스탬프>_<모델명>/<csv이름>/`에 결과 5개와 `run.log`로 떨어진다. 한 폴더에
-두 모델 결과가 섞이면 어느 쪽이 낸 건지 파일만 보고는 알 수 없다.
+CLI(`cli.py`)가 한다.** Job의 셸은 회차(`ITERATIONS`)와 CSV를 순회하며 CLI를
+부르는 일만 한다 - 셸에 로직이 쌓이면 테스트할 수가 없다. 실행 하나는 항상
+모델 하나이고 결과는 `<타임스탬프>/iter<회차>/<모델명>/<csv이름>/`에 결과 6개와
+`run.log`로 떨어진다. 한 폴더에 두 모델 결과가 섞이면 어느 쪽이 낸 건지 파일만
+보고는 알 수 없다.
+
+**모델은 접미사가 아니라 폴더 한 겹이다.** 루트에 회차 같은 단계를 더 붙여도
+계층이 그대로 유지되게 하려는 것이다 - `<루트>_<모델명>`이었다면 회차가
+`iter1_모델명`으로 이름에 눌러붙어 회차별/모델별로 훑을 수가 없다.
 
 눈으로 검토하지 말고 **스크립트를 뽑아서 돌려볼 것.** yaml에서 `- |` 블록을
 꺼내 `/data` 경로만 임시 폴더로 바꾸고, `python -m column_semantics` 자리에 결과 파일만 쓰는 스텁을
 두면 실제 셸 로직(루프·tee·실패 경로·종료코드)이 그대로 검증된다. macOS에서는
 `date -u -d`가 없으니 shim이 필요하다 - 컨테이너(GNU coreutils)에서는 동작한다.
 
-### 결과 문서 5벌은 계약이다
-`columns` / `rulebase` / `plan` / `table` / `llm_calls`. 각각 `<output>.<이름>.json`
-으로 떨어지고, 무엇이 어디 들어가는지는 `pipeline/documents.py`에 있다. 배치 로그
-수집과 결과 분석이 이 구조를 본다. 바꾸려면 `tests/test_pipeline.py`의 계약
-테스트와 `k8s/column-poc-job.yaml`·다운로드 스크립트 주석을 같이 고칠 것.
+### 결과 문서 6벌은 계약이다
+`columns` / `rulebase` / `plan` / `table` / `llm_calls` / `lean`. 각각
+`<output>.<이름>.json`으로 떨어지고, 무엇이 어디 들어가는지는
+`pipeline/documents.py`에 있다. 배치 로그 수집과 결과 분석이 이 구조를 본다.
+바꾸려면 `tests/test_pipeline.py`의 계약 테스트와 `k8s/column-poc-job.yaml`·
+다운로드 스크립트 주석을 같이 고칠 것.
+
+`lean`은 켜지 않아도 `enabled: false`로 항상 떨어진다 - 파일 집합이 실행마다
+달라지면 "안 켰다"와 "중간에 죽었다"를 파일 목록으로 구분할 수 없다.
 
 문서를 가르는 기준은 크기가 아니라 **출처**다. 룰베이스로 계산한 값은 `rulebase`
 에만 두고 다른 문서는 `probe_id`/`check_id`로 가리킨다 — 같은 값을 복사해 두면

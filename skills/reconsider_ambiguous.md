@@ -30,5 +30,11 @@ Return JSON only:
     "unit": null
   },
   "status": "resolved | ambiguous",
-  "note": "무엇을 근거로 재판단했는지, 또는 왜 여전히 불확실한지"
+  "note": "무엇을 근거로 재판단했는지, 또는 왜 여전히 불확실한지",
+  "domain_gap": null
 }
+
+`domain_gap` is how this column leaves the gap loop, so always include it. Set it to `null` if this second look
+identified what the column actually refers to. Keep it — rewritten to what is *still* missing — if it did not.
+A gap you cannot close from this table's evidence remains a gap, and saying so is the correct outcome, not a
+failure. Never drop a gap you have not actually closed.

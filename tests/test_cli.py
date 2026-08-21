@@ -83,13 +83,15 @@ def test_output_root_splits_by_model_and_keeps_the_log(tmp_path, equipment_csv, 
     ) == 0
 
     expected = {
-        "20260820_120000_modelA": "modelA",
-        "20260820_120000_vendor-Model-B": "vendor/Model-B",
+        "modelA": "modelA",
+        "vendor-Model-B": "vendor/Model-B",
     }
-    assert {p.name for p in tmp_path.iterdir() if p.is_dir()} == set(expected)
+    # 모델은 루트 아래 폴더 한 겹이다 - 루트에 회차 같은 단계를 더 붙여도
+    # <타임스탬프>/<회차>/<모델>/<csv> 계층이 그대로 유지된다.
+    assert {p.name for p in root.iterdir() if p.is_dir()} == set(expected)
 
     for folder, model in expected.items():
-        run_dir = tmp_path / folder / equipment_csv.stem
+        run_dir = root / folder / equipment_csv.stem
         names = sorted(p.name for p in run_dir.iterdir())
         assert names == sorted(
             ["run.log"] + [f"result.semantic.{part}.json" for part in PARTS]
@@ -138,10 +140,10 @@ def test_one_model_failing_does_not_stop_the_others(tmp_path, equipment_csv, mon
     assert code == 1  # 실패가 있었음을 종료코드로 알린다
 
     # 죽은 모델도 그때까지의 문서와 원인이 남고, 멀쩡한 모델은 끝까지 돈다.
-    dead = tmp_path / "run_modelB" / equipment_csv.stem
+    dead = root / "modelB" / equipment_csv.stem
     assert "엔드포인트 죽음" in (dead / "run.log").read_text(encoding="utf-8")
     assert read(dead / "result.semantic.columns.json")["meta"]["status"] == "failed"
-    alive = tmp_path / "run_modelA" / equipment_csv.stem
+    alive = root / "modelA" / equipment_csv.stem
     assert read(alive / "result.semantic.columns.json")["meta"]["status"] == "done"
 
 

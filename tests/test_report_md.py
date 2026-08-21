@@ -1,4 +1,4 @@
-"""결과 문서 5벌 -> Markdown 렌더러.
+"""결과 문서 6벌 -> Markdown 렌더러.
 
 여기서 확인하는 것은 서식이 아니라 **조인**이다. 저장할 때 id로만 이어둔 것
 (check -> probe 실측, 컬럼 -> check)이 보고서에서 실제로 이어지는지, 그리고
@@ -47,12 +47,6 @@ def _documents() -> dict:
                         "validated": None,
                     },
                     "stages": [
-                        {
-                            "stage": "column_review",
-                            "value": {"verdict": "needs_work", "gap": "단위 미상", "cites": []},
-                            "phase": "exec",
-                            "round": 1,
-                        },
                         {
                             "stage": "gap",
                             "before": {"selected_meaning": {"meaning": "수량"}},
@@ -117,16 +111,16 @@ def _documents() -> dict:
         "plan": {
             "meta": {**META, "part": "plan"},
             "first_pass": {
-                "stages": ["column_interpretation", "column_review"],
+                "stages": ["column_interpretation"],
                 "relation_analysis_included": False,
                 "reason": "pairwise 증거가 없어 relation_analysis를 생략했다",
             },
             "gap_rounds": [
                 {
                     "round": 1,
-                    "reviewed": ["qty", "ratio"],
+                    "gate": "domain_gap",
+                    "considered": ["qty", "ratio"],
                     "flagged": ["qty"],
-                    "malformed_reviews": [],
                     "planner": {"raw": "...", "skipped": None},
                     "actions": [
                         {"action": "reconsider_ambiguous", "columns": ["qty"], "reason": "단위가 붙지 않았다"}
@@ -182,6 +176,34 @@ def _documents() -> dict:
                     }
                 ],
             },
+        },
+        "lean": {
+            "meta": {**META, "part": "lean"},
+            "enabled": True,
+            "stages": {
+                "column_interpretation": {
+                    "qty": {"meaning": "생산된 수량", "unit": None, "unknown": None},
+                    "ratio": {
+                        "meaning": "비율값",
+                        "unit": "fraction_0_1",
+                        "unknown": "어느 공정의 비율인지",
+                    },
+                },
+                "table_context": {
+                    "table": {"asset_context": "생산 실적", "row_grain": "설비-일자 1건"}
+                },
+                "semantic_validation": {
+                    "group1": {"wrong_meanings": [{"columns": ["ratio"], "why": "최댓값이 87이다"}]}
+                },
+            },
+            "entries": [
+                {
+                    "stage": "table_context",
+                    "target": "table",
+                    "output": None,
+                    "error": "RuntimeError: 최소 출력 실패",
+                }
+            ],
         },
         "llm_calls": {
             "meta": {**META, "part": "llm_calls"},
@@ -240,7 +262,7 @@ def test_renders_full_run(tmp_path):
     assert "어느 공정의 비율인지" in md
     assert "공정 마스터 표" in md
     # 단계 이력
-    assert "needs_work" in md
+    assert "domain_gap" in md
     assert "reconsider_ambiguous" in md
     # 실패한 호출
     assert "TimeoutError: read timeout" in md
@@ -274,6 +296,56 @@ def test_unfinished_run_is_called_out(tmp_path):
 
     assert "완주하지 않은 실행" in md
     assert "RuntimeError: boom" in md
+
+
+def test_lean_output_sits_next_to_the_full_one(tmp_path):
+    """이 절의 존재 이유가 나란함이다 - 같은 컬럼의 두 답이 한 줄에 있어야
+    '분석용 필드를 빼도 의미가 그대로인가'를 눈으로 판단할 수 있다."""
+    base = _write(tmp_path, _documents())
+    md = report_md.render(report_md.load_documents(base), "t", include_calls=False, detail=False)
+
+    section = md.split("## 최소 출력 비교")[1]
+    qty_row = next(line for line in section.splitlines() if line.startswith("| qty "))
+    assert "생산 수량" in qty_row  # 전체 출력
+    assert "생산된 수량" in qty_row  # 최소 출력
+    # 최소 출력이 스스로 남긴 '모르는 것'도 같은 줄에 온다.
+    ratio_row = next(line for line in section.splitlines() if line.startswith("| ratio "))
+    assert "어느 공정의 비율인지" in ratio_row
+
+    assert "생산 실적" in section  # 테이블 의미
+    assert "최댓값이 87이다" in section  # 최소 출력이 지적한 어긋남
+    assert "최소 출력 호출 1건이 실패했다" in section
+
+
+def test_lean_section_says_so_when_it_was_not_run(tmp_path):
+    docs = _documents()
+    docs["lean"] = {"meta": {**META, "part": "lean"}, "enabled": False, "stages": {}, "entries": []}
+    base = _write(tmp_path, docs)
+    md = report_md.render(report_md.load_documents(base), "t", include_calls=False, detail=False)
+
+    assert "최소 출력을 받지 않았다" in md
+
+
+def test_gap_rounds_from_older_runs_still_render(tmp_path):
+    """게이트가 컬럼별 검토 호출이던 시절의 결과가 PVC에 남아 있다."""
+    docs = _documents()
+    docs["plan"]["gap_rounds"] = [
+        {
+            "round": 1,
+            "reviewed": ["qty", "ratio"],
+            "flagged": ["qty"],
+            "malformed_reviews": ["ratio"],
+            "planner": None,
+            "actions": [],
+            "dropped": [],
+            "changed": [],
+        }
+    ]
+    base = _write(tmp_path, docs)
+    md = report_md.render(report_md.load_documents(base), "t", include_calls=False, detail=False)
+
+    assert "게이트(column_review) 2개 판정" in md
+    assert "형식을 못 맞춘 검토 응답 1건" in md
 
 
 def test_resolve_base_from_directory(tmp_path):

@@ -52,7 +52,8 @@ Return JSON only:
       "status": "resolved | ambiguous",
       "selected_meaning": "...",
       "evidence": ["..."],
-      "changed_because": "그룹으로 봐서 달라진 점. 그대로면 빈 문자열"
+      "changed_because": "그룹으로 봐서 달라진 점. 그대로면 빈 문자열",
+      "domain_gap": null
     }
   },
   "probe": {
@@ -62,3 +63,8 @@ Return JSON only:
 }
 
 Set `probe` to null when the relationship implies nothing testable row by row.
+
+Each column's `domain_gap` is how that column leaves the gap loop, so always include it. Set it to `null` for a
+column whose referent this side-by-side reading actually identified. Keep it — rewritten to what is *still*
+missing — for one it did not. Seeing two columns together often settles one of them and leaves the other exactly
+as unknown as before; report that asymmetry rather than clearing both.

@@ -6,10 +6,14 @@ CLI를 한 번씩 부르고, 하나가 실패해도 나머지를 계속 돈다. 
 폴더 규칙은 CLI가 갖고 있으므로 여기서 다시 구현하지 않는다. 규칙이 두 곳에
 있으면 로컬과 배치 결과가 조용히 달라진다.
 
-    <out>/<실행타임스탬프>_<모델명>/<csv_stem>/result.semantic.*.json + run.log
+    <out>/<실행타임스탬프>/<모델명>/<csv_stem>/result.semantic.*.json + run.log
 
 실행 한 번 = 실험 하나 = 타임스탬프 하나. 모델이 여럿이면 타임스탬프를 공유하고
 폴더만 갈린다(LLM_MODEL에 쉼표로 나열).
+
+반복(k8s Job의 ITERATIONS)은 여기 없다 - 같은 입력을 여러 번 돌려 흔들림을 보는
+건 클러스터에서 하는 일이라, 굳이 로컬에서 반복하려면 이 스크립트를 여러 번 부르면
+된다(그러면 타임스탬프가 실행마다 갈린다).
 
     python experiments/run_batch.py --data-dir ./data --out ./results
 """
@@ -46,7 +50,7 @@ def main() -> int:
         return 1
 
     run_root = args.out / datetime.now(KST).strftime("%Y%m%d_%H%M%S")
-    print(f"[BATCH] CSV {len(csvs)}개 -> {run_root}_<모델명>/<csv이름>/")
+    print(f"[BATCH] CSV {len(csvs)}개 -> {run_root}/<모델명>/<csv이름>/")
 
     failed = []
     for csv in csvs:

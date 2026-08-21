@@ -1,17 +1,24 @@
-"""실행 상태를 5개 문서로 나눠 담는다. 결과 파일 하나당 문서 하나다.
+"""실행 상태를 6개 문서로 나눠 담는다. 결과 파일 하나당 문서 하나다.
 
 한 파일에 전부 담으면 "LLM이 주장한 것 / 데이터가 측정한 것 / 코드가 계획한 것"이
 같은 트리 안에서 섞여, 나중에 결과를 분석할 때 어느 쪽 근거인지 매번 따져야 한다.
 문서를 가르는 기준은 크기가 아니라 **출처**다.
 
-    columns    컬럼 하나가 단계를 지나며 어떻게 바뀌었는지 (검토 판정 포함)
+    columns    컬럼 하나가 단계를 지나며 어떻게 바뀌었는지
     rulebase   룰베이스로 계산한 값 전부 - 프로파일, 관계 증거, probe 실측/불가 사유
     plan       무엇을 어떤 순서로 돌렸고, 계획이 어떻게 바뀌었는지
     table      테이블 단위 산출물 - 테이블 설명, 관계 분석, 묶어 본 결과, 검증
     llm_calls  모든 LLM 호출의 입력과 출력 원문
+    lean       같은 입력으로 따로 받아둔 **최소 출력** (파이프라인은 읽지 않는다)
 
 교차 참조는 id로만 한다(check_id, probe_id). 같은 값을 두 문서에 복사해 두면
 한쪽만 고쳐질 때 어느 쪽이 맞는지 알 수 없게 된다.
+
+`lean`이 다른 다섯과 갈라져 있는 이유도 출처다. 저건 이 실행의 산출물이 아니라
+**산출물에 대한 측정**이다 - 위 다섯을 만든 것과 같은 payload로 최소 출력
+프롬프트를 한 번 더 부른 결과이고, 어느 단계도 그 값을 읽지 않는다. 섞어두면
+"파이프라인이 쓴 값"과 "비교하려고 받아둔 값"이 한 트리에 앉아, 나중에 분석하는
+쪽이 매번 어느 쪽인지 따져야 한다.
 """
 
 from __future__ import annotations
@@ -20,9 +27,10 @@ from typing import Any, Dict, List, Optional
 
 from column_semantics.core.history import ColumnHistory
 from column_semantics.core.jsonx import clean_for_json
+from column_semantics.core.lean_track import LeanTrack
 from column_semantics.core.llm_log import LLMLog
 
-PARTS = ["columns", "rulebase", "plan", "table", "llm_calls"]
+PARTS = ["columns", "rulebase", "plan", "table", "llm_calls", "lean"]
 
 
 def build_documents(
@@ -37,6 +45,7 @@ def build_documents(
     joint_findings: Optional[List[Dict[str, Any]]] = None,
     timeline_events: Optional[List[Dict[str, Any]]] = None,
     llm_log: Optional[LLMLog] = None,
+    lean: Optional[LeanTrack] = None,
 ) -> Dict[str, Dict[str, Any]]:
     columns_order = evidence.get("table", {}).get("columns", [])
 
@@ -46,6 +55,7 @@ def build_documents(
         "plan": _plan_doc(planning, timeline_events or []),
         "table": _table_doc(results, validation_rounds, joint_findings or []),
         "llm_calls": _llm_calls_doc(llm_log),
+        "lean": _lean_doc(lean),
     }
     return {
         name: clean_for_json({"meta": {**meta, "part": name}, **body})
@@ -103,14 +113,14 @@ def _rulebase_doc(evidence: Dict[str, Any], probe_log: List[Dict[str, Any]]) -> 
 def _plan_doc(planning: Dict[str, Any], timeline_events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """계획의 전 과정. LLM 원출력(raw)과 코드가 정제한 결과를 나란히 둔다.
 
-    gap_rounds에는 라운드별로 계획에 관한 것만 남는다: 누구를 검토했고, 누가
-    넘어갔고, planner가 무엇을 내놨고(원출력), 무엇이 실행됐고, 무엇이 왜
-    버려졌고, 어떤 컬럼이 실제로 바뀌었는지. 버린 것을 남기는 이유는, planner가
-    무엇을 하려 했는지가 사라지면 프롬프트를 고칠 근거도 사라지기 때문이다.
-    planner가 적은 근거(cites/reason)는 검증하지 않고 그대로 싣는다.
+    gap_rounds에는 라운드별로 계획에 관한 것만 남는다: 누구를 후보로 봤고(`considered`),
+    누가 게이트를 넘었고(`flagged`), planner가 무엇을 내놨고(원출력), 무엇이
+    실행됐고, 무엇이 왜 버려졌고, 어떤 컬럼이 실제로 바뀌었는지. 버린 것을 남기는
+    이유는, planner가 무엇을 하려 했는지가 사라지면 프롬프트를 고칠 근거도
+    사라지기 때문이다. planner가 적은 근거(cites/reason)는 검증하지 않고 그대로 싣는다.
 
-    **검토 판정 자체는 여기 없다.** 컬럼별 판정은 컬럼 문서의 단계 이력에 있고,
-    여기에는 그 결과로 누가 planner로 넘어갔는지만 남는다.
+    게이트는 규칙이라(`gate: "domain_gap"`) 판정 근거를 여기 옮겨 적지 않는다 -
+    `considered`와 컬럼 문서의 해석만 있으면 누가 왜 넘어갔는지 그대로 재현된다.
     """
     return {
         "first_pass": planning.get("first_pass", {}),
@@ -149,6 +159,21 @@ def _llm_calls_doc(llm_log: Optional[LLMLog]) -> Dict[str, Any]:
     if llm_log is None:
         return {"prompts": {}, "calls": []}
     return {"prompts": llm_log.prompts(), "calls": llm_log.calls()}
+
+
+def _lean_doc(lean: Optional[LeanTrack]) -> Dict[str, Any]:
+    """단계별 최소 출력. 켜지 않았으면 `enabled: false`로 비어 있다.
+
+    `stages`는 짝을 맞춰 보기 좋게 {단계: {대상: 출력}}으로 접어둔 것이고,
+    `entries`는 시간순 원본이다(수정 라운드에서 같은 대상이 두 번 나올 수 있는데,
+    접힌 쪽은 마지막만 남는다).
+
+    비용은 여기 적지 않는다 - 최소 출력 호출도 다른 호출과 똑같이 `llm_calls`에
+    들어가므로(prompt_ref가 `lean_*`), 토큰과 시간은 거기서 센다.
+    """
+    if lean is None:
+        return {"enabled": False, "stages": {}, "entries": []}
+    return {"enabled": True, "stages": lean.by_stage(), "entries": lean.entries()}
 
 
 __all__ = ["PARTS", "build_documents"]

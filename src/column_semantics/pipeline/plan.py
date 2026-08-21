@@ -2,7 +2,7 @@
 
 실행 단위는 두 종류이고, **누가 실행을 결정하는가**로 갈린다.
 
-    고정 단계(prompts/)  코드가 정한 순서대로 돈다. 컬럼별 병렬 해석도, 검토도,
+    고정 단계(prompts/)  코드가 정한 순서대로 돈다. 컬럼별 병렬 해석도,
                          테이블 맥락 생성도 여기다 - 무조건 만들어야 하는 산출물이라
                          "돌릴지 말지"를 물어볼 일이 없다. relation_analysis만
                          데이터 조건(pairwise 증거 유무)으로 켜고 끈다.
@@ -12,11 +12,23 @@
 
 보완이 붙기까지 판단이 두 번 갈라진다.
 
-    column_review : 컬럼별로 "더 볼 필요가 있나"만. 무엇을 할지는 정하지 않는다 -
-                    컬럼 하나만 보고서는 "이 둘을 같이 봐야 한다"를 알 수 없다.
+    domain_gap 게이트 : 컬럼별로 "더 볼 필요가 있나". **LLM 호출이 아니라 규칙이다** -
+                    해석이 스스로 "이 컬럼의 실제 대상을 모르겠다"고 남긴 `domain_gap`이
+                    있으면 넘긴다.
     gap_planner   : 넘어온 컬럼들을 한자리에서 보고 무엇을 할지. 여러 컬럼을 묶는
                     판단이 여기서만 가능하다.
     planner       : 검증이 모순을 찾았을 때 어떤 고정 단계를 다시 돌릴지 재계획
+
+게이트에 예전에는 `column_review`라는 컬럼별 LLM 호출이 있었다. 컬럼마다 한 번씩
+"더 볼까?"를 다시 물어보는 일이었는데, 물어볼 근거는 이미 해석이 `domain_gap`으로
+적어둔 것과 같았다 - 같은 모델에게 같은 재료로 두 번 묻고 두 번째 답을 제어 흐름에
+쓴 셈이다. 판정이 흔들리고(형식을 못 맞추면 전부 pass로 떨어졌다) 컬럼 수만큼
+호출이 늘었다. 지금은 필드 하나를 보는 규칙이라 공짜이고 결정적이다.
+
+**대가는 분명하다.** domain_gap이 없는 컬럼은 무슨 문제가 있어도 planner에 닿지
+않는다. 타입과 의미가 어긋나기만 한 컬럼은 이제 `reconcile_type_meaning`을 받지
+못한다 - 그 컬럼도 보고 싶다면 게이트를 넓힐 게 아니라 `column_interpretation`이
+그런 상태를 domain_gap으로 남기게 만드는 쪽이 맞다. 판단은 한 곳에만 있어야 한다.
 
 모두 LLM 출력을 그대로 믿지 않고 여기서 정제한다(모르는 이름, 없는 컬럼,
 중복 제거, 예산). 정제 규칙이 프롬프트가 아니라 코드에 있는 이유는 프롬프트가
@@ -36,17 +48,30 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 # 고정 단계의 정규 순서.
 STAGE_ORDER = [
     "column_interpretation",
-    "column_review",
     "relation_analysis",
     "semantic_validation",
     "table_context",
 ]
 
-# 재계획(planner)이 고를 수 있는 단계. column_review는 빠진다 - 검토는 보완
-# 루프가 스스로 다시 도는 것이지, 검증 실패 때 되돌아갈 지점이 아니다.
-REPLAN_STAGES = [s for s in STAGE_ORDER if s != "column_review"]
+# 재계획(planner)이 고를 수 있는 단계.
+REPLAN_STAGES = list(STAGE_ORDER)
 
-# 검토를 통과하지 못한 컬럼에 gap_planner가 이 중에서 골라 붙인다.
+# 단계마다 하나씩 붙는 최소 출력 프롬프트. 같은 payload로 한 번 더 부르고 결과는
+# `lean` 문서에만 남는다 - **파이프라인은 이 출력을 읽지 않는다.**
+#
+# 운영에서 실제로 쓰는 것은 컬럼 의미와 테이블 의미 두 축인데, 지금 출력에는
+# 분석용으로 붙인 필드가 훨씬 많다(후보 목록, 근거/반대근거, confidence,
+# 대안 타입…). 그것들을 빼도 의미가 그대로인지는 프롬프트를 고쳐보기 전에
+# **같은 입력으로 나란히 받아봐야** 알 수 있다. 그래서 별도 호출이다 - 한 호출에
+# 둘 다 내게 하면 긴 출력이 짧은 출력을 끌고 가서 비교가 성립하지 않는다.
+LEAN_STAGES = {
+    "column_interpretation": "lean_column_interpretation",
+    "relation_analysis": "lean_relation_analysis",
+    "semantic_validation": "lean_semantic_validation",
+    "table_context": "lean_table_context",
+}
+
+# domain_gap이 남은 컬럼에 gap_planner가 이 중에서 골라 붙인다.
 # (Sato식 2단계 구조: 1차는 컬럼 독립적으로, 여기서는 다른 컬럼들의 확정 결과까지
 # 보고 재조정)
 GAP_SKILLS = [
@@ -65,8 +90,8 @@ MAX_GAP_ROUNDS = 2
 MAX_ACTIONS_PER_COLUMN = 2
 MAX_GROUP_COLUMNS = 4
 
-# prompts/ 폴더에 반드시 있어야 하는 것: 고정 단계 + 계획 프롬프트 둘.
-REQUIRED_PROMPTS = ["planner", "gap_planner", *STAGE_ORDER]
+# prompts/ 폴더에 반드시 있어야 하는 것: 고정 단계 + 계획 프롬프트 둘 + 단계별 최소 출력.
+REQUIRED_PROMPTS = ["planner", "gap_planner", *STAGE_ORDER, *LEAN_STAGES.values()]
 # skills/ 폴더에 반드시 있어야 하는 것: 보완 skill 전부.
 REQUIRED_SKILLS = list(GAP_SKILLS)
 
@@ -74,7 +99,7 @@ REQUIRED_SKILLS = list(GAP_SKILLS)
 def first_pass_stages(has_pairwise_evidence: bool) -> List[str]:
     """1차 고정 순서. relation_analysis만 데이터 근거로 조건부 포함한다 -
     pairwise 증거가 하나도 없으면 볼 게 없어서 호출 자체가 낭비다."""
-    stages = ["column_interpretation", "column_review"]
+    stages = ["column_interpretation"]
     if has_pairwise_evidence:
         stages.append("relation_analysis")
     return stages
@@ -109,41 +134,28 @@ def sanitize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
-def flagged_columns(reviews: Dict[str, Any]) -> List[str]:
-    """검토가 넘긴 컬럼. 이게 비면 gap_planner를 아예 부르지 않는다.
+def flagged_columns(
+    interpretations: Dict[str, Any], candidates: Optional[Iterable[str]] = None
+) -> List[str]:
+    """보완으로 넘길 컬럼. 판정 근거는 `domain_gap` 하나다.
 
-    planner가 도는 조건은 임계값이 아니라 검토 결과다 - 넘어온 게 없으면 계획할
-    것도 없고, 근거 없이 부르는 호출이 된다.
+    이게 비면 gap_planner를 아예 부르지 않는다 - 넘어온 게 없으면 계획할 것도
+    없고, 근거 없이 부르는 호출이 된다. 임계값으로 게이트를 만들지 말 것.
+
+    빈 값(`{}`, `""`)은 gap이 없는 것으로 본다. 프롬프트는 "없으면 null"이라고
+    말하지만 모델은 빈 껍데기를 내기도 하고, 그걸 gap으로 세면 아무것도 모른다는
+    보고 없이 컬럼이 planner로 넘어간다.
+
+    `candidates`를 주면 그 컬럼들만 본다(2회차 이후: 지난 라운드에 실제로 바뀐
+    컬럼만 다시 판정한다. 손대지 않은 컬럼은 같은 값이라 결과도 같다).
     """
-    return [
-        col
-        for col, review in reviews.items()
-        if isinstance(review, dict) and review.get("verdict") == "needs_work"
-    ]
-
-
-def sanitize_review(review: Any) -> Dict[str, Any]:
-    """검토 출력을 실행 가능한 형태로만 줄인다.
-
-    verdict가 두 리터럴 중 하나가 아니면 pass로 본다 - 형식을 못 맞춘 응답을
-    "더 보자"로 해석하면, 프롬프트가 깨졌을 때 모든 컬럼이 planner로 넘어간다.
-    `gap`/`cites`는 내용을 검사하지 않고 그대로 싣는다.
-    """
-    if not isinstance(review, dict):
-        return {"verdict": "pass", "gap": "", "cites": [], "malformed_verdict": repr(review)[:80]}
-    verdict = review.get("verdict")
-    cites = review.get("cites")
-    result = {
-        "verdict": verdict if verdict in {"pass", "needs_work"} else "pass",
-        "gap": review.get("gap") or "",
-        "cites": cites if isinstance(cites, list) else [],
-    }
-    if verdict not in {"pass", "needs_work"}:
-        # pass로 처리하되 그 사실을 남긴다. 모델이 형식을 못 맞추면 모든 컬럼이
-        # 조용히 통과해 planner가 영영 안 도는데, 기록이 없으면 "왜 계획이 안
-        # 서지"를 프롬프트가 아니라 파이프라인에서 찾게 된다.
-        result["malformed_verdict"] = repr(verdict)[:80]
-    return result
+    names = list(candidates) if candidates is not None else list(interpretations)
+    flagged = []
+    for col in names:
+        interpretation = interpretations.get(col)
+        if isinstance(interpretation, dict) and interpretation.get("domain_gap"):
+            flagged.append(col)
+    return flagged
 
 
 def sanitize_gap_actions(
@@ -156,7 +168,7 @@ def sanitize_gap_actions(
     """gap_planner 출력에서 실행 가능한 행동만 남기고, 버린 것은 이유와 함께 돌려준다.
 
     거르는 것은 전부 "실행할 수 있는가"다 - 아는 행동인지, 컬럼이 실재하는지,
-    검토가 넘긴 컬럼을 대상으로 하는지, 예산 안인지, 이미 한 일인지. 근거가
+    게이트가 넘긴 컬럼을 대상으로 하는지, 예산 안인지, 이미 한 일인지. 근거가
     충분한지는 보지 않는다.
 
     `action_counts`와 `done`은 호출을 넘어 누적된다. 라운드가 바뀌었다고 같은
@@ -201,10 +213,10 @@ def sanitize_gap_actions(
         if len(columns) > MAX_GROUP_COLUMNS:
             dropped.append({**record, "why": f"그룹이 너무 큼(>{MAX_GROUP_COLUMNS})"})
             continue
-        # 그룹에는 검토를 통과한 컬럼이 문맥으로 낄 수 있다. 다만 넘어온 컬럼이
+        # 그룹에는 gap이 없는 컬럼이 문맥으로 낄 수 있다. 다만 넘어온 컬럼이
         # 하나도 없는 그룹은 아무도 요청하지 않은 작업이다.
         if not (set(columns) & flagged_set):
-            dropped.append({**record, "why": "검토가 넘긴 컬럼이 대상에 없음"})
+            dropped.append({**record, "why": "게이트가 넘긴 컬럼이 대상에 없음"})
             continue
 
         key = (name, tuple(sorted(columns)))

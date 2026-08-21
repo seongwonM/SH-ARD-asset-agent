@@ -21,19 +21,29 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from column_semantics.adapters.llm import LLMClient
 from column_semantics.adapters.prompts import PromptLibrary
+from column_semantics.core.lean_track import LeanTrack
 from column_semantics.pipeline.plan import (
     GAP_SKILLS,
+    LEAN_STAGES,
     REPLAN_STAGES,
     sanitize_plan,
-    sanitize_review,
 )
 
 
 class StageRunner:
-    def __init__(self, stages: PromptLibrary, skills: PromptLibrary, llm: LLMClient):
+    def __init__(
+        self,
+        stages: PromptLibrary,
+        skills: PromptLibrary,
+        llm: LLMClient,
+        lean: Optional[LeanTrack] = None,
+    ):
         self.stages = stages
         self.skills = skills
         self.llm = llm
+        # 주어졌을 때만 단계마다 최소 출력을 한 번 더 받는다(호출이 두 배가 되므로
+        # 기본은 꺼져 있다). 받아둔 값은 문서에만 남고 실행에는 쓰이지 않는다.
+        self.lean = lean
         self._stage: Dict[str, Any] = {}
 
     @contextmanager
@@ -73,6 +83,26 @@ class StageRunner:
     def _call_skill(self, name: str, payload: Dict[str, Any], label: str, **context: Any):
         return self._call(name, self.skills, "skill", payload, label, **context)
 
+    def _lean(self, stage: str, target: str, payload: Dict[str, Any]) -> None:
+        """같은 payload로 최소 출력을 한 번 더 받는다. 결과는 기록에만 남는다.
+
+        비교가 성립하려면 입력이 같아야 하므로 payload를 손대지 않는다. 그리고
+        여기서 죽어도 파이프라인은 계속 간다 - 이건 측정이지 산출물이 아니라서,
+        측정 때문에 본 실행이 무너지면 앞뒤가 바뀐다. 실패는 기록에 남는다.
+        """
+        if self.lean is None:
+            return
+        prompt = LEAN_STAGES.get(stage)
+        if prompt is None:
+            return
+        try:
+            output = self._call(
+                prompt, self.stages, "lean", payload, label=f"{prompt}:{target}", target=target
+            )
+            self.lean.record(stage, target, output=output)
+        except Exception as e:  # noqa: BLE001 - 측정 실패가 실행을 죽이면 안 된다
+            self.lean.record(stage, target, error=f"{type(e).__name__}: {e}")
+
     # -- 계획 -----------------------------------------------------------
 
     def plan(
@@ -106,15 +136,18 @@ class StageRunner:
     def plan_gaps(
         self,
         flagged: List[str],
-        reviews: Dict[str, Any],
         evidence: Dict[str, Any],
         results: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """검토가 넘긴 컬럼들을 한자리에 놓고 무엇을 할지 정한다.
+        """domain_gap이 남은 컬럼들을 한자리에 놓고 무엇을 할지 정한다.
 
-        컬럼 하나만 보는 검토는 "이 둘을 같이 봐야 한다"를 알 수 없다. 그 판단이
-        가능한 유일한 지점이라 여기서만 여러 컬럼을 한 payload에 넣는다 - 대신
-        넘어온 컬럼과 그 짝만 넣지, 테이블 전체를 넣지 않는다.
+        여러 컬럼을 묶어 봐야 한다는 판단은 컬럼 하나만 보는 호출이 할 수 없다.
+        그 판단이 가능한 유일한 지점이라 여기서만 여러 컬럼을 한 payload에 넣는다 -
+        대신 넘어온 컬럼과 그 짝만 넣지, 테이블 전체를 넣지 않는다.
+
+        `gap`은 해석이 스스로 적은 `domain_gap`을 그대로 넘긴다. 예전에는 컬럼별
+        검토 호출이 쓴 문장을 넣었는데, 같은 재료로 같은 모델이 두 번째로 쓴
+        문장이었다 - 무엇을 모르는지는 해석이 이미 필드로 적어두고 있었다.
         """
         column_interp = (results.get("column_interpretation") or {}).get("columns", {})
         flagged_columns = [
@@ -122,7 +155,7 @@ class StageRunner:
                 "name": col,
                 "column_profile": evidence["column_profiles"].get(col),
                 "interpretation": column_interp.get(col),
-                "gap": (reviews.get(col) or {}).get("gap", ""),
+                "domain_gap": (column_interp.get(col) or {}).get("domain_gap"),
             }
             for col in flagged
         ]
@@ -150,39 +183,14 @@ class StageRunner:
             "raw_other_column_names": evidence["table"]["columns"],
             "revision_feedback": revision_feedback,
         }
-        return self._call_stage(
+        result = self._call_stage(
             "column_interpretation",
             payload,
             label=f"column_interpretation:{column}",
             column=column,
         )
-
-    def review_column(
-        self,
-        column: str,
-        evidence: Dict[str, Any],
-        results: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """이 컬럼을 더 볼지 말지만 정한다(무엇을 할지는 gap_planner가 정한다).
-
-        해석을 쓴 호출이 못 본 것을 준다: 그 컬럼이 낀 pairwise 증거다. 같은 정보로
-        같은 모델에게 다시 물으면 자기 문장을 다시 읽는 것에 그친다.
-        """
-        column_interp = (results.get("column_interpretation") or {}).get("columns", {})
-        semantic_type = semantic_types(results)
-        payload = {
-            "table": evidence["table"],
-            "target_column": column,
-            "column_profile": evidence["column_profiles"][column],
-            "interpretation": column_interp.get(column),
-            "semantic_type": semantic_type.get(column),
-            "pairwise_evidence": _pairwise_touching(evidence, [column]),
-            "other_column_names": [c for c in evidence["table"]["columns"] if c != column],
-        }
-        raw = self._call_stage(
-            "column_review", payload, label=f"column_review:{column}", column=column
-        )
-        return {"raw": copy.deepcopy(raw), "review": sanitize_review(raw)}
+        self._lean("column_interpretation", column, payload)
+        return result
 
     def validate_group(
         self,
@@ -235,13 +243,16 @@ class StageRunner:
             "relation_analysis": relation_analysis_scoped,
             "revision_feedback": revision_feedback,
         }
-        return self._call_stage(
+        target = group_label or "+".join(columns)
+        result = self._call_stage(
             "semantic_validation",
             payload,
-            label=f"semantic_validation:{group_label or '+'.join(columns)}",
+            label=f"semantic_validation:{target}",
             group=group_label,
             columns=list(columns),
         )
+        self._lean("semantic_validation", target, payload)
+        return result
 
     # -- 테이블 단위 고정 단계 -------------------------------------------
 
@@ -253,8 +264,8 @@ class StageRunner:
         focus: Optional[List[str]] = None,
         revision_feedback: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """단일 LLM 호출로 끝나는 고정 단계 전용. column_interpretation/column_review는
-        컬럼별 병렬이, semantic_validation은 그룹별 병렬이 각각 따로 처리한다."""
+        """단일 LLM 호출로 끝나는 고정 단계 전용. column_interpretation은 컬럼별
+        병렬이, semantic_validation은 그룹별 병렬이 각각 따로 처리한다."""
 
         if stage == "relation_analysis":
             payload = {
@@ -284,7 +295,9 @@ class StageRunner:
         else:
             raise ValueError(f"run_stage는 {stage}을 처리하지 않는다 (전용 메서드를 쓸 것)")
 
-        return self._call_stage(stage, payload, label=stage)
+        result = self._call_stage(stage, payload, label=stage)
+        self._lean(stage, "table", payload)
+        return result
 
     # -- 보완 skill ------------------------------------------------------
 

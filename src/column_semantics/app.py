@@ -4,8 +4,8 @@ core/adapters/pipeline를 실제로 이어 붙이는 곳은 여기 한 군데다
 스크립트든 이 함수를 부르지, 어댑터를 직접 만들지 않는다 - 그래야 "로컬 실행과
 k8s 배치가 같은 경로를 탄다"가 코드로 보장된다.
 
-결과는 문서 5벌(columns/rulebase/plan/table/llm_calls)이고, `output`을 주면
-그 경로를 기준으로 5개 파일에 나눠 쓴다. 어느 문서에 무엇이 들어가는지는
+결과는 문서 6벌(columns/rulebase/plan/table/llm_calls/lean)이고, `output`을 주면
+그 경로를 기준으로 6개 파일에 나눠 쓴다. 어느 문서에 무엇이 들어가는지는
 `pipeline/documents.py`에 있다.
 """
 
@@ -24,6 +24,7 @@ from column_semantics.adapters.csv_source import read_csv_safely
 from column_semantics.adapters.llm import make_llm_from_env, make_rate_limiter_from_env
 from column_semantics.adapters.prompts import FileSystemPrompts
 from column_semantics.core.clock import now_iso
+from column_semantics.core.lean_track import LeanTrack
 from column_semantics.core.llm_log import LLMLog
 from column_semantics.core.timeline import Timeline
 from column_semantics.pipeline.documents import PARTS
@@ -54,7 +55,7 @@ def safe_name(value: str) -> str:
 
 
 def output_paths(output: Path) -> Dict[str, Path]:
-    """출력 기준 경로 하나에서 문서별 파일 경로 5개를 만든다.
+    """출력 기준 경로 하나에서 문서별 파일 경로 6개를 만든다.
 
         result.semantic.json -> result.semantic.columns.json
                                 result.semantic.rulebase.json
@@ -75,12 +76,18 @@ def analyze_csv(
     skill_dir: Path = DEFAULT_SKILL_DIR,
     max_rounds: int = 2,
     output: Optional[Path] = None,
+    lean: bool = False,
 ) -> Documents:
-    """CSV 하나를 해석해 문서 5벌을 돌려준다.
+    """CSV 하나를 해석해 문서 6벌을 돌려준다.
 
     output을 주면 skill이 끝날 때마다 같은 파일들을 덮어쓴다. 중간에 죽어도
     그때까지 계산된 내용은 파일에 남아 있고, 끝났는지 여부는 각 문서의
     `meta.status`(in_progress/done)로 구분한다.
+
+    `lean=True`면 고정 단계마다 같은 payload로 **최소 출력 프롬프트를 한 번 더**
+    부르고 그 결과를 `lean` 문서에 남긴다. 파이프라인은 그 값을 읽지 않는다 -
+    출력을 줄여도 의미가 그대로인지 재보기 위한 측정이고, 그래서 LLM 호출이
+    대략 두 배가 된다. 기본은 꺼져 있다.
     """
     csv_path = Path(csv_path)
     prompt_dir = Path(prompt_dir)
@@ -95,7 +102,8 @@ def analyze_csv(
     llm = make_llm_from_env(llm_log=llm_log, rate_limiter=rate_limiter)
     stages = FileSystemPrompts(prompt_dir, required=REQUIRED_PROMPTS)
     skills = FileSystemPrompts(skill_dir, required=REQUIRED_SKILLS)
-    runner = StageRunner(stages=stages, skills=skills, llm=llm)
+    lean_track = LeanTrack() if lean else None
+    runner = StageRunner(stages=stages, skills=skills, llm=llm, lean=lean_track)
 
     settings = {
         "started_at": now_iso(),
@@ -109,7 +117,11 @@ def analyze_csv(
         "llm_endpoint": os.getenv("LLM_API_ENDPOINT", ""),
         "requests_per_minute": rate_limiter.requests_per_minute,
         "max_concurrency": rate_limiter.max_concurrency,
+        # 재시도/타임아웃도 결과를 바꾼다(끝까지 돌았는지가 갈린다) - 기본값으로
+        # 돌아도 무엇이었는지 남아야 두 실행을 비교할 수 있다.
+        "llm_call": getattr(llm, "call_settings", {}),
         "max_rounds": max_rounds,
+        "lean_track": lean,
         "runtime": f"python {platform.python_version()} / pandas {pd.__version__}",
         "env": env_snapshot(),
     }
@@ -167,11 +179,21 @@ def _print_config(settings: Dict[str, Any]) -> None:
         ("skills", settings["skills_dir"]),
         ("max_rounds", settings["max_rounds"]),
         (
+            "lean_track",
+            "켬 (단계마다 최소 출력 1회 추가 - 호출 약 2배)"
+            if settings["lean_track"]
+            else "끔",
+        ),
+        (
             "gap_budget",
             f"rounds={MAX_GAP_ROUNDS} actions_per_column={MAX_ACTIONS_PER_COLUMN} "
             f"group_columns={MAX_GROUP_COLUMNS}",
         ),
         ("rpm / concurrency", f"{settings['requests_per_minute']} / {settings['max_concurrency']}"),
+        (
+            "llm_call",
+            " ".join(f"{k}={v}" for k, v in settings["llm_call"].items()) or "(기본값)",
+        ),
         ("runtime", settings["runtime"]),
     ]
     print("[CONFIG] ==================== 실행 설정 ====================", flush=True)
