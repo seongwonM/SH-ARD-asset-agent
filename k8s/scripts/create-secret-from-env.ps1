@@ -52,10 +52,18 @@ $secretKeys = @(
     # 쉼표로 여러 개를 적으면 배치가 모델마다 한 번씩 돈다 (예: modelA,modelB).
     "LLM_MODEL",
     "LLM_REQUESTS_PER_MINUTE",
-    "LLM_MAX_CONCURRENCY"
-    # 재시도/타임아웃(LLM_TIMEOUT_SECONDS 등)은 여기 넣지 않는다 - 비밀이 아니라
-    # 실험 설정이라, 그 실험을 띄운 Job yaml에 값이 보이는 편이 낫다.
-    # secret에 있으면 결과만 남았을 때 무슨 설정이었는지 레포에서 찾을 수 없다.
+    "LLM_MAX_CONCURRENCY",
+    # 호출 하나가 얼마나 버티는가. 여기 있는 이유는 환경(개발/폐쇄망)마다 다른
+    # 값을 쓰는데, yaml에 박으면 환경을 옮길 때마다 커밋이 생기기 때문이다.
+    # 실제로 무엇으로 돌았는지는 결과 문서의 meta.llm_call과 run.log의 [CONFIG]
+    # 줄에 남으므로, 값이 레포에 없어도 실행 기록에서 되짚을 수 있다.
+    "LLM_TIMEOUT_SECONDS",
+    "LLM_MAX_RETRIES",
+    "LLM_RETRY_BACKOFF_SECONDS",
+    "LLM_HTTP_RETRIES",
+    # 강건성 테스트 반복 횟수(column-poc-job의 셸이 읽는다). 없으면 1이다.
+    # LLM_ 접두사가 아닌 유일한 키라, 이 목록은 접두사 규칙이 아니라 명시 목록이다.
+    "ITERATIONS"
 )
 
 $literalArgs = @()
