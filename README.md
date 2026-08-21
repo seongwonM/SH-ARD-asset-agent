@@ -118,9 +118,16 @@ LLM 판단이 아니라 데이터 조건이다.
 따로 뽑는다. 새 값은 만들지 않고 문서에 있는 것만 옮긴다.
 
 ```bash
-make report DIR=./results/20260820_1200_modelA/my_table   # 그 실행 폴더에 report.md
-make report DIR=./results ALL=1                           # 실행마다 report.md + index.md
+python tools/report_md.py ./results/20260820_1200_modelA/my_table  # 그 폴더에 report.md
+python tools/report_md.py ./results --all                          # 실행마다 report.md + index.md
+python tools/report_md.py <경로> --include-calls                   # LLM 호출 원문까지
+python tools/report_md.py <경로> --no-detail                       # 컬럼별 상세 없이 요약만
+
+make report DIR=./results/20260820_1200_modelA/my_table            # make를 쓴다면
 ```
+
+표준 라이브러리만 쓰므로 PYTHONPATH도, 설치도 필요 없다. 폴더 대신 기준 경로나
+문서 파일 하나를 줘도 나머지 넷을 알아서 찾는다.
 
 단계가 끝날 때마다 이 5개 파일을 그대로 덮어쓴다. 중간에 죽어도 그때까지의
 결과는 파일에 남고, 완주 여부는 `meta.status`(`in_progress` / `done`)로 본다.
