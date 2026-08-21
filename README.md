@@ -38,7 +38,8 @@ src/column_semantics/      진입점은 `python -m column_semantics`
     llm_log.py               LLM 호출 입출력 원문
     timeline.py, clock.py    실행 궤적
   adapters/                바깥 세계. 여기만 갈아끼우면 다른 환경에 붙는다
-    csv_source.py            인코딩 추정 + 깨진 행 복구
+    csv_source.py            인코딩 추정 + 깨진 행 복구 진입점
+    csv_repair.py            값 안의 쉼표로 쪼개진 행 되돌리기 (컬럼 프로파일 + DP)
     llm.py                   OpenAI 호환 엔드포인트 (LLMClient 프로토콜)
     prompts.py               prompts/*.md, skills/*.md 로딩
     env.py, ratelimit.py
@@ -53,6 +54,7 @@ src/column_semantics/      진입점은 `python -m column_semantics`
 prompts/*.md               고정 단계 프롬프트. 코드가 순서대로 돌린다
 skills/*.md                보완 skill. 검토가 넘긴 컬럼에만 붙는다
 experiments/               실험 전용. 제품 경로가 아니다
+tools/                     운영용 CLI. 로직은 없고 src를 부른다(깨진 CSV 진단 등)
 k8s/                       배치 Job / 디버그 Pod / PVC
 ```
 

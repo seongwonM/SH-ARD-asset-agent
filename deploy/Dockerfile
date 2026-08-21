@@ -26,6 +26,9 @@ COPY src ./src
 COPY prompts ./prompts
 COPY skills ./skills
 COPY experiments ./experiments
+# 배치가 깨진 CSV로 죽었을 때 컨테이너 안에서 바로 진단할 수 있게 같이 넣는다
+# (복구 로직 자체는 src의 어댑터에 있고, 여기 있는 건 얇은 CLI다).
+COPY tools ./tools
 
 RUN printf '%s' "$GIT_SHA" > /app/BUILD_SHA
 
