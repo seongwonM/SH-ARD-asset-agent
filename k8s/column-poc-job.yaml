@@ -4,6 +4,13 @@
 # 하나씩 호출한다. 셸로 감싸는 이유는 CSV 하나가 실패해도 나머지를 계속 돌리기
 # 위해서다(파이썬 배치 버전은 experiments/run_batch.py에 있다 - 로컬용).
 #
+# 데이터 넣기
+#   ./k8s/scripts/upload-robustness-data.ps1      # data/robustness-test -> PVC
+#
+#   PVC는 클러스터 안에서만 마운트되므로 디버그 Pod를 경유해 넣는다. 이 스크립트는
+#   /data/robustness_test를 **지우고 새로 넣는다** - 덧씌우기만 하면 예전 실험에서
+#   올린 CSV가 남아 이 Job이 조용히 같이 돌린다.
+#
 # 코드 위치
 #   기본은 이미지 안의 /app이다. src / prompts / skills가 deploy/Dockerfile로
 #   COPY되어 있으므로 추가 준비 없이 바로 돈다.

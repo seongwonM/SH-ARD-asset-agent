@@ -149,11 +149,17 @@ make batch DATA=./data OUT=./results
 # k8s: 이미지 안 코드로 바로 돈다 (CI가 커밋 SHA로 이미지 태그를 갱신)
 ./k8s/scripts/create-secret-from-env.ps1        # .env의 LLM_* -> k8s secret
 kubectl apply -f k8s/data-pvc.yaml
+./k8s/scripts/upload-robustness-data.ps1        # data/robustness-test의 CSV+metadata -> PVC
 kubectl delete job column-poc-batch --ignore-not-found   # Job spec은 불변이다
 kubectl apply -f k8s/column-poc-job.yaml
 kubectl logs -f job/column-poc-batch                     # 첫 줄 [SRC]에 빌드 SHA
 ./k8s/scripts/download-column-poc-results.ps1 -LocalDir .\results
 ```
+
+데이터 업로드는 **기존 내용을 지우고 새로 넣는다**. Job은 `/data/robustness_test`의
+`*.csv`를 전부 도니까, 덧씌우기만 하면 예전 실험 CSV가 남아 같이 돌아간다 —
+결과 폴더에 낯선 이름이 하나 더 있는 것으로만 드러나서 알아채기 어렵다.
+지우지 않고 얹으려면 `-KeepExisting`.
 
 결과는 `<KST타임스탬프>_<모델명>/<csv_stem>/`에 문서 5개와 `run.log`로 떨어진다.
 **`LLM_MODEL`에 쉼표로 여러 모델을 적으면 모델마다 한 바퀴씩 돌고 폴더가 갈린다**
