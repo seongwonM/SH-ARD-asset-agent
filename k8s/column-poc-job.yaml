@@ -89,7 +89,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: column-poc-batch
-          image: ghcr.io/seongwonm/sh-ard-asset-agent:e71892e58dce45a9614b8f17fd11689e4ee2281b
+          image: ghcr.io/seongwonm/sh-ard-asset-agent:d926621563278d715af0b1b7f3028f983002c516
           imagePullPolicy: Always
           command:
             - /bin/bash
