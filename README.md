@@ -114,6 +114,14 @@ LLM 판단이 아니라 데이터 조건이다.
 알 수 없다. 단, LLM에게 되돌려주는 재시도 피드백에는 실측값을 `measured`로 붙여
 보낸다. 반증의 근거가 곧 다음 시도의 힌트다.
 
+읽을 때는 그 id를 사람이 손으로 이어야 하므로, 조인까지 끝낸 Markdown 한 장을
+따로 뽑는다. 새 값은 만들지 않고 문서에 있는 것만 옮긴다.
+
+```bash
+make report DIR=./results/20260820_1200_modelA/my_table   # 그 실행 폴더에 report.md
+make report DIR=./results ALL=1                           # 실행마다 report.md + index.md
+```
+
 단계가 끝날 때마다 이 5개 파일을 그대로 덮어쓴다. 중간에 죽어도 그때까지의
 결과는 파일에 남고, 완주 여부는 `meta.status`(`in_progress` / `done`)로 본다.
 

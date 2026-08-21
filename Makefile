@@ -1,4 +1,4 @@
-.PHONY: help install test lint run batch robustness check clean exp-new exp-list exp-remove
+.PHONY: help install test lint run batch report robustness check clean exp-new exp-list exp-remove
 
 help:
 	@echo "install      의존성 설치"
@@ -7,6 +7,7 @@ help:
 	@echo "check        LLM 엔드포인트 점검 (연결 + JSON 응답)"
 	@echo "run          CSV 한 개 해석 (CSV=path [OUT=path]). LLM_MODEL에 쉼표로 여러 모델 가능"
 	@echo "batch        폴더 안 CSV 전부 해석 (DATA=dir [OUT=dir])"
+	@echo "report       결과 문서 5벌을 읽는 MD로 (DIR=결과폴더 [ALL=1] [CALLS=1])"
 	@echo "robustness   같은 CSV 반복 실행해 흔들림 측정 (DATA=dir OUT=file [REPS=n])"
 	@echo "exp-new      새 실험 worktree 생성 (NAME=001-short-name)"
 	@echo "exp-list     현재 worktree 목록"
@@ -33,6 +34,10 @@ run:
 batch:
 	@test -n "$(DATA)" || (echo "사용법: make batch DATA=./data [OUT=./results]" && exit 2)
 	python experiments/run_batch.py --data-dir "$(DATA)" --out "$(or $(OUT),./results)"
+
+report:
+	@test -n "$(DIR)" || (echo "사용법: make report DIR=./results/<실행>/<csv> [ALL=1] [CALLS=1]" && exit 2)
+	python tools/report_md.py "$(DIR)" $(if $(ALL),--all,) $(if $(CALLS),--include-calls,)
 
 robustness:
 	@test -n "$(DATA)" || (echo "사용법: make robustness DATA=./data OUT=./results/robustness.jsonl [REPS=5]" && exit 2)
