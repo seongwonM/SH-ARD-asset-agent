@@ -76,7 +76,7 @@ def analyze_csv(
     skill_dir: Path = DEFAULT_SKILL_DIR,
     max_rounds: int = 2,
     output: Optional[Path] = None,
-    lean: bool = False,
+    lean: bool = True,
 ) -> Documents:
     """CSV 하나를 해석해 문서 6벌을 돌려준다.
 
@@ -84,10 +84,10 @@ def analyze_csv(
     그때까지 계산된 내용은 파일에 남아 있고, 끝났는지 여부는 각 문서의
     `meta.status`(in_progress/done)로 구분한다.
 
-    `lean=True`면 고정 단계마다 같은 payload로 **최소 출력 프롬프트를 한 번 더**
-    부르고 그 결과를 `lean` 문서에 남긴다. 파이프라인은 그 값을 읽지 않는다 -
-    출력을 줄여도 의미가 그대로인지 재보기 위한 측정이고, 그래서 LLM 호출이
-    대략 두 배가 된다. 기본은 꺼져 있다.
+    `lean=True`(기본)면 고정 단계마다 같은 payload로 **최소 출력 프롬프트를 한 번
+    더** 부르고 그 결과를 `lean` 문서에 남긴다. 파이프라인은 그 값을 읽지 않는다 -
+    출력을 줄여도 의미가 그대로인지 재보기 위한 측정이다. LLM 호출이 대략 두 배가
+    되므로, 비교가 필요 없는 실행은 `lean=False`(CLI `--no-lean`)로 끈다.
     """
     csv_path = Path(csv_path)
     prompt_dir = Path(prompt_dir)
@@ -182,7 +182,7 @@ def _print_config(settings: Dict[str, Any]) -> None:
             "lean_track",
             "켬 (단계마다 최소 출력 1회 추가 - 호출 약 2배)"
             if settings["lean_track"]
-            else "끔",
+            else "끔 (--no-lean 또는 LEAN_TRACK=0)",
         ),
         (
             "gap_budget",

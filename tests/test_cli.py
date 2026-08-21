@@ -34,6 +34,19 @@ def use_fake(monkeypatch):
     )
 
 
+def test_lean_is_on_unless_it_is_turned_off(monkeypatch):
+    """최소 출력은 기본으로 받는다. `.env`에 적은 LEAN_TRACK은 secret 화이트리스트에
+    없어서 클러스터로 넘어가지 않으므로, 켜는 쪽을 기본값으로 두고 끄는 쪽을 명시한다."""
+    monkeypatch.delenv("LEAN_TRACK", raising=False)
+    assert cli.build_parser().parse_args(["x.csv"]).lean is True
+    assert cli.build_parser().parse_args(["x.csv", "--no-lean"]).lean is False
+
+    monkeypatch.setenv("LEAN_TRACK", "0")
+    assert cli.build_parser().parse_args(["x.csv"]).lean is False
+    # 인자가 환경변수를 이긴다.
+    assert cli.build_parser().parse_args(["x.csv", "--lean"]).lean is True
+
+
 def test_cli_writes_one_file_per_document(tmp_path, equipment_csv, monkeypatch):
     use_fake(monkeypatch)
     out = tmp_path / "result.semantic.json"

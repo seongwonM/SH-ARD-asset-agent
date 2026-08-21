@@ -115,26 +115,31 @@ domain_gap이 없는 컬럼은 다른 문제가 있어도 보완을 받지 못�
 | `<out>.plan.json` | 1차 고정 순서, gap 배정, 재계획 라운드(LLM 원출력 + 정제 결과), 실행 구간 |
 | `<out>.table.json` | 테이블 단위 산출물 — table_context, relation_analysis, 검증 라운드 |
 | `<out>.llm_calls.json` | 모든 LLM 호출의 system 프롬프트 / 입력 payload / 응답 원문 |
-| `<out>.lean.json` | `--lean`일 때만 채워진다 — 같은 payload로 따로 받아둔 **최소 출력** |
+| `<out>.lean.json` | 같은 payload로 따로 받아둔 **최소 출력**. 기본 켜짐, `--no-lean`이면 비어서 떨어진다 |
 
 모든 문서가 같은 `meta`(status, validation_status, llm_model, started_at, …)를
 들고 있고 `meta.part`로 자기가 어느 문서인지 밝힌다.
 
-### 최소 출력 트랙 (`--lean`)
+### 최소 출력 트랙 (기본 켜짐)
 
 운영에서 실제로 쓰는 것은 **컬럼 의미**와 **테이블 의미** 두 축인데, 지금 단계들의
 출력에는 분석하려고 붙인 필드가 훨씬 많다(후보 목록, 근거/반대근거, confidence,
 대안 타입…). 그걸 빼도 의미가 그대로 나오는지 알아야 프롬프트를 줄일 수 있다.
 
 ```bash
-python -m column_semantics ./data.csv --lean     # 또는 LEAN_TRACK=1
+python -m column_semantics ./data.csv              # 기본으로 켜져 있다
+python -m column_semantics ./data.csv --no-lean    # 끄면 호출이 절반
 ```
 
 고정 단계마다 짝이 되는 `lean_*` 프롬프트를 **같은 payload로 한 번 더** 부르고,
 결과를 `lean` 문서에만 남긴다. 한 호출에 둘 다 내게 하지 않는 이유는 긴 출력이
 짧은 출력을 끌고 가서 비교가 성립하지 않기 때문이고, 별도 문서인 이유는 이게
 산출물이 아니라 **산출물에 대한 측정**이기 때문이다 — **파이프라인은 이 값을
-읽지 않는다.** LLM 호출은 대략 두 배가 되므로 기본은 꺼져 있다.
+읽지 않는다.**
+
+LLM 호출이 대략 두 배가 된다. 배치에서 끄려면 `k8s/column-poc-job.yaml`의
+`LEAN_TRACK` env를 `"0"`으로 둔다 — **`.env`에 적어도 클러스터로 가지 않는다.**
+secret은 `LLM_*` 화이트리스트만 담는다(`create-secret-from-env.ps1`).
 
 `python tools/report_md.py <경로>`가 두 출력을 한 줄에 놓고 보여준다.
 

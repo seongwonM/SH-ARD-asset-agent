@@ -251,6 +251,13 @@ spec:
             # PVC에 올린 코드로 돌리려면 "1". 기본은 이미지 코드다.
             - name: USE_PVC_CODE
               value: "0"
+            # 단계마다 최소 출력을 한 번 더 받아 <base>.lean.json에 남길지.
+            # 기본이 켜짐이라 이 줄이 없어도 돈다 - "0"으로 두면 끄고, LLM 호출이
+            # 절반으로 준다. **여기 적어야 한다**: secret은 LLM_* 화이트리스트만
+            # 담아서(create-secret-from-env.ps1) .env에 적은 값은 클러스터로
+            # 넘어오지 않는다. 실험 설정이라 결과와 같은 커밋에 남는 편이 맞다.
+            - name: LEAN_TRACK
+              value: "1"
           envFrom:
             - secretRef:
                 name: sh-ard-asset-agent-secret

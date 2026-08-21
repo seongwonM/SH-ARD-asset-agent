@@ -59,7 +59,7 @@ probe는 반증 도구다. 통과가 참을 증명하지 않는다. 그리고 **
 |---|---|---|---|
 | 고정 단계 | `prompts/` | 코드(`STAGE_ORDER`). 데이터 조건으로만 켜고 끈다 | column_interpretation, relation_analysis, semantic_validation, table_context |
 | 보완 skill | `skills/` | domain_gap 게이트 → `gap_planner`를 거쳐 배정 | reconsider_ambiguous, explain_sparsity, reconcile_type_meaning, joint_interpretation |
-| 최소 출력 | `prompts/lean_*.md` | 고정 단계마다 짝으로. `--lean`일 때만 | 각 단계의 `lean_*` |
+| 최소 출력 | `prompts/lean_*.md` | 고정 단계마다 짝으로. 기본 켜짐(`--no-lean`으로 끔) | 각 단계의 `lean_*` |
 
 **항상 나와야 하는 산출물을 skill로 만들지 말 것.** 컬럼 해석과 테이블 맥락은
 무조건 만들어야 하니 "돌릴지 말지"를 물을 여지가 없다 - 물어보는 순간 비용과

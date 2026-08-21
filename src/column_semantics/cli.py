@@ -26,7 +26,7 @@
     <base>.plan.json        계획과 실행 과정
     <base>.table.json       테이블 단위 산출물과 검증 라운드
     <base>.llm_calls.json   모든 LLM 호출의 입력/출력 원문
-    <base>.lean.json        --lean일 때만 채워지는 단계별 최소 출력(비교용)
+    <base>.lean.json        단계별 최소 출력(비교용). --no-lean이면 비어서 떨어진다
 
 단계가 끝날 때마다 이 파일들을 덮어쓴다. 중간에 죽어도 그때까지의 결과는 남고,
 완주했는지는 각 파일의 `meta.status`가 done인지로 판별한다.
@@ -82,22 +82,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-rounds", type=int, default=2, help="검증 실패 시 최대 재계획 라운드"
     )
-    parser.add_argument(
+    lean = parser.add_mutually_exclusive_group()
+    lean.add_argument(
         "--lean",
+        dest="lean",
         action="store_true",
-        default=_env_flag("LEAN_TRACK"),
-        help=(
-            "고정 단계마다 최소 출력을 한 번 더 받아 <base>.lean.json에 남긴다"
-            " (LLM 호출이 약 2배가 된다. 환경변수 LEAN_TRACK=1로도 켤 수 있다)"
-        ),
+        help="고정 단계마다 최소 출력을 한 번 더 받아 <base>.lean.json에 남긴다(기본값)",
     )
+    lean.add_argument(
+        "--no-lean",
+        dest="lean",
+        action="store_false",
+        help="최소 출력을 받지 않는다. LLM 호출이 절반으로 준다",
+    )
+    # 기본은 켜짐. 끄려면 --no-lean 또는 LEAN_TRACK=0.
+    parser.set_defaults(lean=_env_flag("LEAN_TRACK", default=True))
     return parser
 
 
-def _env_flag(name: str) -> bool:
-    """배치는 인자가 아니라 환경변수로 켠다 - Job yaml에서 인자를 고치는 것보다
-    env 한 줄이 낫고, 그 값은 secret/configmap과 같은 자리에 남는다."""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def _env_flag(name: str, default: bool) -> bool:
+    """환경변수로 켜고 끄되, 값이 없으면 기본값을 쓴다.
+
+    **`.env`에 적어도 k8s에는 안 간다.** secret은 `LLM_*` 화이트리스트만 담으므로
+    (`k8s/scripts/create-secret-from-env.ps1`), 배치에서 끄려면 Job yaml의 env에
+    적어야 한다 - 실험 설정은 결과와 같은 커밋에 남는 편이 맞기도 하다.
+    """
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 def resolve_output(
