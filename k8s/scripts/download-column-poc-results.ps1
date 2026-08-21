@@ -81,7 +81,19 @@ if ($exists.Trim() -ne "yes") {
 New-Item -ItemType Directory -Force -Path $LocalDir | Out-Null
 
 Write-Host "다운로드: ${PodName}:${remotePath} -> $LocalDir"
-kubectl cp @nsArgs "${PodName}:${remotePath}" $LocalDir
+# 받을 폴더로 옮겨 "."로 받는다. kubectl cp는 인자에 ':'가 있으면 원격 경로로
+# 읽으므로, -LocalDir에 Windows 절대경로(C:\...)를 주면 드라이브 문자를 파드
+# 이름으로 보고 "one of src or dest must be a local file specification"으로 죽는다.
+Push-Location $LocalDir
+try {
+    kubectl cp @nsArgs "${PodName}:${remotePath}" "."
+    if ($LASTEXITCODE -ne 0) {
+        throw "다운로드 실패. Pod가 살아있는지, 경로가 맞는지 확인하세요."
+    }
+}
+finally {
+    Pop-Location
+}
 
 Write-Host "`n완료. 받은 내용:"
 Get-ChildItem -Recurse $LocalDir | ForEach-Object { Write-Host "  $($_.FullName)" }

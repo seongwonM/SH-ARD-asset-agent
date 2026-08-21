@@ -79,10 +79,22 @@ Write-Host "기존 $remoteDir 정리..."
 kubectl exec @nsArgs $PodName -- rm -rf $remoteDir
 kubectl exec @nsArgs $PodName -- mkdir -p $remoteDir
 
-foreach ($item in $required) {
-    $source = Join-Path $LocalDir $item
-    Write-Host "$source -> ${PodName}:${remoteDir}/$item"
-    kubectl cp @nsArgs $source "${PodName}:${remoteDir}/$item"
+# 폴더로 옮겨 이름만 넘긴다. kubectl cp는 인자에 ':'가 있으면 원격 경로로 읽어서,
+# Windows 절대경로(C:\...)를 주면 드라이브 문자를 파드 이름으로 보고
+# "one of src or dest must be a local file specification"으로 죽는다.
+# 기본값(-LocalDir ".")으로는 안 걸리지만 -LocalDir에 절대경로를 주면 걸린다.
+Push-Location $LocalDir
+try {
+    foreach ($item in $required) {
+        Write-Host "$LocalDir/$item -> ${PodName}:${remoteDir}/$item"
+        kubectl cp @nsArgs $item "${PodName}:${remoteDir}/$item"
+        if ($LASTEXITCODE -ne 0) {
+            throw "$item 업로드 실패."
+        }
+    }
+}
+finally {
+    Pop-Location
 }
 
 Write-Host "`n업로드 완료. 확인:"

@@ -143,13 +143,24 @@ if ($KeepExisting) {
 
 $total = $files.Count
 $i = 0
-foreach ($f in $files) {
-    $i++
-    Write-Host "[$i/$total] $($f.Name) -> ${PodName}:${remoteDir}/$($f.Name)"
-    kubectl cp @nsArgs $f.FullName "${PodName}:${remoteDir}/$($f.Name)"
-    if ($LASTEXITCODE -ne 0) {
-        throw "$($f.Name) 업로드 실패. PVC가 가득 찼거나 Pod가 죽었는지 확인하세요."
+# kubectl cp는 인자에 ':'가 있으면 원격 경로(<pod>:<path>)로 읽는다. Windows
+# 절대경로 C:\... 를 그대로 넘기면 드라이브 문자 C를 파드 이름으로 보고, 양쪽 다
+# 원격이라고 판단해 "one of src or dest must be a local file specification"으로
+# 죽는다. 그래서 파일이 있는 폴더로 옮겨 **파일 이름만** 넘긴다 - 상대경로에는
+# ':'가 없다. (kubectl 자체의 오래된 문제라 옵션으로는 못 피한다.)
+Push-Location $LocalDir
+try {
+    foreach ($f in $files) {
+        $i++
+        Write-Host "[$i/$total] $($f.Name) -> ${PodName}:${remoteDir}/$($f.Name)"
+        kubectl cp @nsArgs $f.Name "${PodName}:${remoteDir}/$($f.Name)"
+        if ($LASTEXITCODE -ne 0) {
+            throw "$($f.Name) 업로드 실패. PVC가 가득 찼거나 Pod가 죽었는지 확인하세요."
+        }
     }
+}
+finally {
+    Pop-Location
 }
 
 Write-Host "`n업로드 완료 ($total 개). 확인:"
